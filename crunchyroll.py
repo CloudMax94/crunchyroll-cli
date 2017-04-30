@@ -37,30 +37,8 @@ SUBTITLE_TEMP_PATH = os.path.dirname(os.path.realpath(__file__))+'/.ass'
 QUEUE_FOLLOWING_THRESHOLD = 14
 # How many percentage of the video you must've seen for it to count as seen
 QUEUE_WATCHED_THRESHOLD = 0.8
-
-# Should it authenticate automatically on startup? (disables cookie import)
+# Should it authenticate automatically on startup?
 AUTHENTICATE = True
-# Should the cookies be extracted from chrome automatically?
-USE_CHROME_COOKIES = False
-# Path to the chrome cookie sqlite database
-CHROME_COOKIE_FILE_PATH = os.path.expanduser('~/.config/google-chrome/Default/Cookies')
-# On Mac, CHROME_COOKIE_DECRYPT_PASS is your password from Keychain
-# On Linux, CHROME_COOKIE_DECRYPT_PASS is 'peanuts' by default
-#    If you use libsecret, you can find the password by running "secret-tool search application chrome"
-CHROME_COOKIE_DECRYPT_PASS = 'peanuts'
-# 1003 on Mac, 1 on Linux
-CHROME_COOKIE_DECRYPT_ITERATIONS = 1
-# Same thing but for Firefox
-USE_FIREFOX_COOKIES = False
-with open(os.path.expanduser('~/.mozilla/firefox/profiles.ini')) as f:
-    FIREFOX_PROFILE_NAME, = re.findall('\[Profile0\]\n.+?Path=(.+?\.default)', f.read(), re.S)
-FIREFOX_COOKIE_FILE_PATH = os.path.expanduser('~/.mozilla/firefox/{}/cookies.sqlite'.format(FIREFOX_PROFILE_NAME))
-# You can also specify cookies manually here
-cookies = {
-    'sess_id': '',
-    'c_userid': '',
-    'c_userkey': ''
-}
 
 # END OF CONFIGURATION
 
@@ -74,8 +52,11 @@ rpc_headers = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:51.0) Gecko/20100101 Firefox/51.0',
 }
 
+cookies = {'sess_id': ''}
+
 authenticated = False
 queueSoup = None
+ram_cache = None
 
 class color:
    PURPLE = '\033[95m'
@@ -209,70 +190,6 @@ def convert(script):
     formattedsubs = header+styles+events
     return formattedsubs
 
-def decrypt_chrome_cookie(encrypted_value):
-    def clean(x):
-        return x[:-x[-1]].decode('utf8')
-
-    # Trim off the 'v11' that Chrome prepends
-    encrypted_value = encrypted_value[3:]
-
-    salt = b'saltysalt'
-    iv = b' ' * 16
-    my_pass = CHROME_COOKIE_DECRYPT_PASS.encode('utf8')
-
-    key = PBKDF2(my_pass, salt, 16, CHROME_COOKIE_DECRYPT_ITERATIONS)
-    cipher = AES.new(key, AES.MODE_CBC, IV=iv)
-
-    decrypted = cipher.decrypt(encrypted_value)
-    return clean(decrypted)
-
-def get_chrome_cookies():
-    conn = sqlite3.connect(CHROME_COOKIE_FILE_PATH)
-    c = conn.cursor()
-    c.execute('SELECT name, encrypted_value FROM cookies WHERE host_key == ".crunchyroll.com" and (name == "sess_id" OR name == "c_userid" OR name == "c_userkey");')
-    rows = c.fetchall()
-    c.close()
-    conn.close()
-    out = {}
-    for row in rows:
-        out[row[0]] = decrypt_chrome_cookie(row[1])
-    return out
-
-def get_firefox_cookies():
-    conn = sqlite3.connect(FIREFOX_COOKIE_FILE_PATH)
-    c = conn.cursor()
-    c.execute('SELECT name, value FROM moz_cookies WHERE baseDomain == "crunchyroll.com" and (name == "sess_id" OR name == "c_userid" OR name == "c_userkey");')
-    rows = c.fetchall()
-    c.close()
-    conn.close()
-    out = dict(rows)
-    return out
-
-def update_cookies():
-    global authenticated
-    global cookies
-    if USE_CHROME_COOKIES:
-        cookies = get_chrome_cookies()
-        print(color.GREEN+'Cookies were imported from Chrome'+color.END)
-    elif USE_FIREFOX_COOKIES:
-        cookies = get_firefox_cookies()
-        print(color.GREEN+'Cookies were imported from Firefox'+color.END)
-
-    if len(cookies['sess_id']) == 0:
-        print(color.YELLOW+'Warning: sess_id is empty, running as guest'+color.END)
-    else:
-        # It should be possible to generate a new sess_id using c_userid and c_userkey, somehow
-        if len(cookies['c_userid']) == 0 or len(cookies['c_userkey']) == 0:
-            print(color.YELLOW+'Warning: c_userid or c_userkey is empty'+color.END)
-
-        success = True # TODO: Perform some fetch to verify that the cookie is valid here!
-        if not success and authenticated:
-            print(color.YELLOW+'Warning: Your sess_id is invalid, you are now running as a guest'+color.END)
-        elif success and not authenticated:
-            print(color.GREEN+'You are now authenticated'+color.END)
-        authenticated = success
-
-ram_cache = None
 def get_cache(key = None):
     def _get_cache():
         global ram_cache
@@ -641,7 +558,6 @@ def run_random(args):
                 filtered.append(media)
     run_media(random.choice(filtered).url.text)
 
-
 def run_search(search):
     if search != "":
         if queueSoup is None:
@@ -673,7 +589,7 @@ def show_help(args = []):
         color.BOLD+'URL'+color.END+'\n'+
                    '       You can watch a specific episode by providing its crunchyroll.com URL.\n\n'+
         color.BOLD+'COMMANDS'+color.END+'\n'+
-        color.BOLD+'       queue'+color.END+' [all] [following|watching] [update]\n'+ = Series that you've started watching
+        color.BOLD+'       queue'+color.END+' [all] [following|watching] [update]\n'+
                    '         Series where you\'ve seen past the watched threshold on the current episode are hidden unless "all" is provided.\n'+
                    '         "watching" will filter out all series where you haven\'t began watching any episodes yet.\n'+
                    '         "following" will filter out all series where an episode has been out for 2 weeks without you watching it.\n'+
@@ -719,8 +635,6 @@ print(color.BOLD+'Welcome to '+color.YELLOW+'Crunchyroll CLI'+color.END)
 if len(argv) < 2 or argv[1].lower() != 'help': #Do not print this message if they're already calling help
     print('Don\'t know what to do? Type "'+color.BOLD+'help'+color.END+'"')
 print()
-if not AUTHENTICATE: #Do not prepare cookies if using auth
-    update_cookies()
 if not (len(argv) > 1 and argv[1].lower() == 'auth') and AUTHENTICATE: #Do not authenticate here if the auth command is being called anyway
     authenticate([])
 try: #Remove traceback when exiting with ctrl+d
