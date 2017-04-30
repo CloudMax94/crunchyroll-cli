@@ -40,8 +40,6 @@ API_HOST = 'api.crunchyroll.com'
 RPC_API_HOST = 'www.crunchyroll.com'
 USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:51.0) Gecko/20100101 Firefox/51.0'
 
-session_id = None
-authenticated = False
 queueSoup = None
 ram_cache = None
 
@@ -108,8 +106,9 @@ def call_api(name, params, secure = False):
         'Host': API_HOST,
         'User-Agent': USER_AGENT
     }
-    if session_id:
-        params['session_id'] = session_id
+    sess_id = get_cache("session_id")
+    if sess_id:
+        params['session_id'] = sess_id
     return requests.post('{}://{}/{}.0.xml'.format(protocol, API_HOST, name), headers=headers, params=params)
 
 def call_rpc(name, params):
@@ -118,7 +117,7 @@ def call_rpc(name, params):
         'User-Agent': USER_AGENT
     }
     params['req'] = name
-    resp = requests.get('http://{}/xml/'.format(RPC_API_HOST), headers=headers, params=params, cookies={'sess_id': session_id})
+    resp = requests.get('http://{}/xml/'.format(RPC_API_HOST), headers=headers, params=params, cookies={'sess_id': get_cache("session_id")})
     resp.encoding = 'utf-8'
     return resp
 
@@ -267,23 +266,11 @@ def create_session():
         print_overridable(color.GREEN+'Session created'+color.END, True)
         sess_id = soup.response.data.session_id.text
         if not soup.response.data.auth.is_empty_element:
-            #Auth is renewed everytime a new session is started
-            set_cache("auth", soup.response.data.auth.text);
-            set_cache("expires", timestamp_to_datetime(soup.response.data.expires.text).timestamp());
-            finish_auth(sess_id)
+            finish_auth(sess_id, soup.response.data.auth.text, soup.response.data.expires.text)
             return None #We return None to short-circuit the caller since the session is already authenticated
         return sess_id
 
-def finish_auth(sess_id):
-    global authenticated
-    global session_id
-    session_id = sess_id
-    set_cache("session_id", sess_id);
-    print_overridable(color.GREEN+'You are now authenticated'+color.END, True)
-    authenticated = True
-
 def authenticate_session(user, password, sess_id):
-    global authenticated
     data = {
         "account": user,
         "password": password,
@@ -293,11 +280,14 @@ def authenticate_session(user, password, sess_id):
     soup = BeautifulSoup(call_api('login', data, True).text, 'xml')
     if soup.response.error.text == 'true':
         print_overridable(color.RED+'Error: '+soup.response.message.text+color.END, True)
-        authenticated = False
     else:
-        set_cache("auth", soup.response.data.auth.text);
-        set_cache("expires", timestamp_to_datetime(soup.response.data.expires.text).timestamp());
-        finish_auth(sess_id)
+        finish_auth(sess_id, soup.response.data.auth.text, soup.response.data.expires.text)
+
+def finish_auth(sess_id, auth, expires):
+    set_cache("auth", auth);
+    set_cache("expires", timestamp_to_datetime(expires).timestamp());
+    set_cache("session_id", sess_id);
+    print_overridable(color.GREEN+'You are now authenticated'+color.END, True)
 
 #TODO: Currently the session is dropped entirely if the authentication fails. We want to cache and re-use it on the next attempt!
 def authenticate(args):
@@ -305,7 +295,7 @@ def authenticate(args):
     sess_id = get_cache("session_id");
     if sess_id and "new" not in args:
         #TODO: Add a check here to make sure that the session hasn't expired
-        finish_auth(sess_id)
+        print(color.GREEN+'You are still authenticated'+color.END)
         return
     sess_id = create_session()
     if sess_id:
@@ -324,9 +314,8 @@ def authenticate(args):
         authenticate_session(user, password, sess_id)
 
 def update_queue():
-    global authenticated
     global queueSoup
-    if not authenticated:
+    if not get_cache("session_id"):
         if queueSoup:
             print(color.YELLOW+'Error: Could not update queue. You are not authenticated'+color.END)
         else:
@@ -340,7 +329,6 @@ def update_queue():
         print_overridable('Loading queue...')
         resultStr = 'Queue loaded'
     data = {
-        'session_id': session_id,
         'fields': 'last_watched_media,last_watched_media_playhead,most_likely_media,most_likely_media_playhead,media.media_id,media.series_id,media.name,media.episode_number,media.available_time,media.duration,media.collection_name,media.url,series,series.name'
     }
 
@@ -350,7 +338,6 @@ def update_queue():
         if queueSoup.response.code.text == "bad_session":
             msg = "Your session has expired. You are no longer authenticated"
             unset_cache("session_id")
-            authenticated = False
         else:
             msg = "{} ({})".format(queueSoup.response.message.text, queueSoup.response.code.text)
         print_overridable(color.RED+'Error: Could not fetch queue. '+msg+color.END, True)
@@ -359,7 +346,6 @@ def update_queue():
 
 def run_media(pageurl):
     global queueSoup
-    #seriesid = None
     while True:
         mediaid = re.search(r'[^\d](\d{6})(?:[^\d]|$)', pageurl).group(1)
 
@@ -459,7 +445,7 @@ def run_media(pageurl):
         print_under()
         if sub: os.remove(SUBTITLE_TEMP_PATH)
 
-        if authenticated and input_yes('Do you want to update seen duration to {}/{}'.format(mmss(playhead), mmss(duration))):
+        if get_cache("session_id") and input_yes('Do you want to update seen duration to {}/{}'.format(mmss(playhead), mmss(duration))):
             print_overridable('Updating seen duration...')
             resp = call_rpc('RpcApiVideo_VideoView', {
                 'media_id': mediaid,
