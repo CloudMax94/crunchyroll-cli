@@ -448,7 +448,7 @@ def run_media(pageurl):
                 url2, = re.findall('ondemand/.+', host)
 
             subarg = ""
-            if sub: subarg = " --sub-file "+SUBTITLE_TEMP_PATH
+            if sub: subarg = " --sub-file '"+SUBTITLE_TEMP_PATH+"'"
             proccommand = "rtmpdump -a '"+url2+"' --flashVer 'WIN 11,8,800,50' -m 15 --pageUrl '"+pageurl+"' --rtmp '"+url1+"' --swfVfy http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf -y '"+file+"' | mpv --force-seekable=yes"+subarg+" -"
 
         proc = subprocess.Popen(
