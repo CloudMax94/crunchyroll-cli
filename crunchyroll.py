@@ -243,9 +243,6 @@ def get_device_id():
     set_cache("device_id", device_id);
     return device_id
 
-# TODO: This sends back your current session id if one is already set
-#       Does it return a new one when the session has expired?
-#       If it does, we can use this to test for expired sessions when authenticating
 def create_session():
     data = {
         "device_id": get_device_id(),
@@ -261,6 +258,7 @@ def create_session():
         data["auth"] = auth
 
     print_overridable('Creating session...')
+    unset_cache('session_id') # The call will fail if you have an expired session set
     resp = call_api('start_session', data)
 
     if resp['error']:
@@ -298,9 +296,13 @@ def authenticate(args):
     global unassigned_session
     sess_id = get_cache("session_id");
     if sess_id and "new" not in args:
-        #TODO: Add a check here to make sure that the session hasn't expired
-        print(color.GREEN+'You are still authenticated'+color.END)
-        return
+        resp = call_api('list_locales', {}) # This is just a dummy call used to determine if session is valid
+        if not resp['error']:
+            print(color.GREEN+'You are still authenticated'+color.END)
+            return
+        print(color.RED+'Session has expired'+color.END)
+        unset_cache('session_id')
+
     sess_id = create_session()
     if sess_id:
         user = get_cache("user")
