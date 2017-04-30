@@ -366,7 +366,7 @@ def update_queue():
 
         print_overridable(color.GREEN+resultStr+color.END, True)
 
-def run_media(pageurl):
+def run_media(pageurl, playhead = 0):
     while True:
         mediaid = re.search(r'[^\d](\d{6})(?:[^\d]|$)', pageurl).group(1)
 
@@ -428,7 +428,6 @@ def run_media(pageurl):
         streamconfig.encoding = 'utf-8'
 
         print_overridable('Starting stream...')
-        playhead = 0
         if not streamconfig.host.text:
             # If by any chance that GetStreamInfo returns HLS, it should never get to this point
             url = streamconfig.file.text
@@ -449,7 +448,7 @@ def run_media(pageurl):
 
             subarg = ""
             if sub: subarg = " --sub-file '"+SUBTITLE_TEMP_PATH+"'"
-            proccommand = "rtmpdump -a '"+url2+"' --flashVer 'WIN 11,8,800,50' -m 15 --pageUrl '"+pageurl+"' --rtmp '"+url1+"' --swfVfy http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf -y '"+file+"' | mpv --force-seekable=yes"+subarg+" -"
+            proccommand = "rtmpdump -a '"+url2+"' --flashVer 'WIN 11,8,800,50' -m 15 --pageUrl '"+pageurl+"' --rtmp '"+url1+"' --swfVfy http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf -y '"+file+"' --start "+str(playhead)+" | mpv --rebase-start-time=no --force-seekable=yes"+subarg+" -"
 
         proc = subprocess.Popen(
             proccommand,
@@ -459,17 +458,27 @@ def run_media(pageurl):
             shell=True
         )
 
-        # Pick up stderr for playhead information
+        # Pick up stderr for playhead and download information
+        if playhead:
+            startPosition = mmss(playhead)+'-'
+        else:
+            startPosition = ''
+        downloadPosition = playhead
         while True:
             line = proc.stderr.readline().decode("utf-8")
             if line == '' and proc.poll() is not None:
                 break
-            timestamp = re.search('AV: ([0-9]{2}:[0-9]{2}:[0-9]{2}) / ([0-9]{2}:[0-9]{2}:[0-9]{2})', line)
+            download = re.search('([0-9.]+) kB / ([0-9.]+) sec', line)
+            if download: downloadPosition = float(download.group(2))
+            timestamp = re.search('V: ([0-9]{2}:[0-9]{2}:[0-9]{2}) / ([0-9]{2}:[0-9]{2}:[0-9]{2})', line)
             if timestamp:
                 current = [int(i) for i in timestamp.group(1).split(":")]
                 playhead = (current[0]*60+current[1])*60+current[2]
-                print_overridable('Playhead: {}'.format(mmss(playhead)))
-
+                if "Paused" in line:
+                    paused = ' [PAUSED]'
+                else:
+                    paused = ''
+                print_overridable((color.BOLD+'Playhead:'+color.END+' {}{} '+color.BOLD+'Downloaded:'+color.END+' {}{}').format(mmss(playhead), paused, startPosition, mmss(downloadPosition)))
         print_under()
         if sub: os.remove(SUBTITLE_TEMP_PATH)
 
@@ -479,7 +488,7 @@ def run_media(pageurl):
                 'media_id': mediaid,
                 'cbcallcount': 0,
                 'cbelapsed': 30,
-                'playhead': config.duration
+                'playhead': playhead
             })
             if resp.status_code != 200:
                 print_overridable(color.RED+'Error: '+resp.text+color.END, True)
@@ -574,15 +583,21 @@ def run_search(search):
 
         print_overridable('Searching for \"{}\"...'.format(search))
         search = search.lower()
+        playhead = 0
         media = None
         for item in queue:
             if search in item['series']['name'].lower():
+                playhead = item['most_likely_media_playhead']
                 media = item['most_likely_media']
                 break
         if media:
             print_overridable()
             if input_yes('Found \"{} - E{} - {}\"\nDo you want to watch it'.format(media['collection_name'], media['episode_number'], media['name'])):
-                run_media(media['url'])
+                startTime = 0
+                duration = media['duration']
+                if playhead > 0 and playhead < duration and input_yes('Do you want to continue watching from {}/{}'.format(mmss(playhead), mmss(duration))):
+                    startTime = playhead
+                run_media(media['url'], startTime)
         else:
             print_overridable(color.RED+'Could not find any series'+color.END, True)
     else:
