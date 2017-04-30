@@ -1,1 +1,1 @@
-# crunchyroll-cli
+# Crunchyroll CLI
