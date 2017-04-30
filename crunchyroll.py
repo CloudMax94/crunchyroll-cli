@@ -673,7 +673,7 @@ def show_help(args = []):
         color.BOLD+'URL'+color.END+'\n'+
                    '       You can watch a specific episode by providing its crunchyroll.com URL.\n\n'+
         color.BOLD+'COMMANDS'+color.END+'\n'+
-        color.BOLD+'       queue'+color.END+' [all] [following|watching] [update]\n'+ = Series that you've started watching
+        color.BOLD+'       queue'+color.END+' [all] [following|watching] [update]\n'+'Series that you\'ve started watching\n'+
                    '         Series where you\'ve seen past the watched threshold on the current episode are hidden unless "all" is provided.\n'+
                    '         "watching" will filter out all series where you haven\'t began watching any episodes yet.\n'+
                    '         "following" will filter out all series where an episode has been out for 2 weeks without you watching it.\n'+
