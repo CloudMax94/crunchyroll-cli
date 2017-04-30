@@ -435,7 +435,8 @@ def run_media(pageurl):
             subarg = []
             if sub:
                 subarg = ['--sub-file', SUBTITLE_TEMP_PATH]
-            subprocess.call(['mpv', url] + subarg)
+            proccommand = ['mpv', url] + subarg
+
         else:
             host = streamconfig.host.text
             file = streamconfig.file.text
@@ -448,24 +449,26 @@ def run_media(pageurl):
 
             subarg = ""
             if sub: subarg = " --sub-file "+SUBTITLE_TEMP_PATH
-            proc = subprocess.Popen(
-                ["rtmpdump -a '"+url2+"' --flashVer 'WIN 11,8,800,50' -m 15 --pageUrl '"+pageurl+"' --rtmp '"+url1+"' --swfVfy http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf -y '"+file+"' | mpv --force-seekable=yes"+subarg+" -"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                bufsize=1,
-                shell=True
-            )
+            proccommand = "rtmpdump -a '"+url2+"' --flashVer 'WIN 11,8,800,50' -m 15 --pageUrl '"+pageurl+"' --rtmp '"+url1+"' --swfVfy http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf -y '"+file+"' | mpv --force-seekable=yes"+subarg+" -"
 
-            # Pick up stderr for playhead information
-            while True:
-                line = proc.stderr.readline().decode("utf-8")
-                if line == '' and proc.poll() is not None:
-                    break
-                timestamp = re.search('AV: ([0-9]{2}:[0-9]{2}:[0-9]{2}) / ([0-9]{2}:[0-9]{2}:[0-9]{2})', line)
-                if timestamp:
-                    current = [int(i) for i in timestamp.group(1).split(":")]
-                    playhead = (current[0]*60+current[1])*60+current[2]
-                    print_overridable('Playhead: {}'.format(mmss(playhead)))
+        proc = subprocess.Popen(
+            proccommand,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            bufsize=1,
+            shell=True
+        )
+
+        # Pick up stderr for playhead information
+        while True:
+            line = proc.stderr.readline().decode("utf-8")
+            if line == '' and proc.poll() is not None:
+                break
+            timestamp = re.search('AV: ([0-9]{2}:[0-9]{2}:[0-9]{2}) / ([0-9]{2}:[0-9]{2}:[0-9]{2})', line)
+            if timestamp:
+                current = [int(i) for i in timestamp.group(1).split(":")]
+                playhead = (current[0]*60+current[1])*60+current[2]
+                print_overridable('Playhead: {}'.format(mmss(playhead)))
 
         print_under()
         if sub: os.remove(SUBTITLE_TEMP_PATH)
