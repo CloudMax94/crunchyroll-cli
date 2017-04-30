@@ -8,10 +8,8 @@ import os
 import random
 import re
 import requests
-import shutil
 import subprocess
 import zlib
-import sqlite3
 import signal
 import time
 import string
@@ -19,11 +17,7 @@ import getpass
 import json
 
 from dateutil import tz
-from binascii import hexlify, unhexlify
-
 from Crypto.Cipher import AES
-from Crypto.Protocol.KDF import PBKDF2
-
 from bs4 import BeautifulSoup
 from sys import argv, exit, stdout
 
@@ -42,18 +36,11 @@ AUTHENTICATE = True
 
 # END OF CONFIGURATION
 
-api_headers = {
-    'Host': 'api.crunchyroll.com',
-    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:51.0) Gecko/20100101 Firefox/51.0',
-}
+API_HOST = 'api.crunchyroll.com'
+RPC_API_HOST = 'www.crunchyroll.com'
+USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:51.0) Gecko/20100101 Firefox/51.0'
 
-rpc_headers = {
-    'Host': 'www.crunchyroll.com',
-    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:51.0) Gecko/20100101 Firefox/51.0',
-}
-
-cookies = {'sess_id': ''}
-
+session_id = None
 authenticated = False
 queueSoup = None
 ram_cache = None
@@ -100,7 +87,6 @@ def print_under(str = ''):
         print('')
     print_overridable_len = 0
 
-
 def input_yes(question):
     answer = input(question+' (Y/N)? ')
     return answer.lower() == 'y'
@@ -113,6 +99,28 @@ def mmss(seconds):
 
 def timestamp_to_datetime(ts):
     return (datetime.datetime.strptime(ts[:-7],'%Y-%m-%dT%H:%M:%S') + datetime.timedelta(hours=int(ts[-5:-3]), minutes=int(ts[-2:])) * -int(ts[-6:-5]+'1')).replace(tzinfo=tz.tzutc())
+
+# TODO: Change to JSON
+def call_api(name, params, secure = False):
+    protocol = "http"
+    if secure: protocol += "s"
+    headers = {
+        'Host': API_HOST,
+        'User-Agent': USER_AGENT
+    }
+    if session_id:
+        params['session_id'] = session_id
+    return requests.post('{}://{}/{}.0.xml'.format(protocol, API_HOST, name), headers=headers, params=params)
+
+def call_rpc(name, params):
+    headers = {
+        'Host': RPC_API_HOST,
+        'User-Agent': USER_AGENT
+    }
+    params['req'] = name
+    resp = requests.get('http://{}/xml/'.format(RPC_API_HOST), headers=headers, params=params, cookies={'sess_id': session_id})
+    resp.encoding = 'utf-8'
+    return resp
 
 def generate_key(mediaid, size=32):
     # Below: Do some black magic
@@ -230,7 +238,6 @@ def get_device_id():
     device_id = get_cache("device_id")
     if device_id != None: return device_id
     # Create a random device id and cache it
-    print("Creating device id and caching it")
     char_set = string.ascii_letters + string.digits
     device_id = "".join(random.sample(char_set, 32))
     set_cache("device_id", device_id);
@@ -251,7 +258,8 @@ def create_session():
         data["auth"] = auth
 
     print_overridable('Creating session...')
-    soup = BeautifulSoup(requests.get('http://api.crunchyroll.com/start_session.0.xml', headers=api_headers, params=data, cookies=cookies).text, 'xml')
+    soup = BeautifulSoup(call_api('start_session', data).text, 'xml')
+
     if soup.response.error.text == 'true':
         print_overridable(color.RED+'Error: '+soup.response.message.text+color.END, True)
         return None
@@ -259,7 +267,7 @@ def create_session():
         print_overridable(color.GREEN+'Session created'+color.END, True)
         sess_id = soup.response.data.session_id.text
         if not soup.response.data.auth.is_empty_element:
-            #Auth is renewd everytime a new session is started
+            #Auth is renewed everytime a new session is started
             set_cache("auth", soup.response.data.auth.text);
             set_cache("expires", timestamp_to_datetime(soup.response.data.expires.text).timestamp());
             finish_auth(sess_id)
@@ -268,8 +276,8 @@ def create_session():
 
 def finish_auth(sess_id):
     global authenticated
-    global cookies
-    cookies['sess_id'] = sess_id
+    global session_id
+    session_id = sess_id
     set_cache("session_id", sess_id);
     print_overridable(color.GREEN+'You are now authenticated'+color.END, True)
     authenticated = True
@@ -282,7 +290,7 @@ def authenticate_session(user, password, sess_id):
         "session_id": sess_id
     }
     print_overridable('Authenticating...')
-    soup = BeautifulSoup(requests.get('https://api.crunchyroll.com/login.0.xml', headers=api_headers, params=data).text, 'xml')
+    soup = BeautifulSoup(call_api('login', data, True).text, 'xml')
     if soup.response.error.text == 'true':
         print_overridable(color.RED+'Error: '+soup.response.message.text+color.END, True)
         authenticated = False
@@ -294,13 +302,13 @@ def authenticate_session(user, password, sess_id):
 #TODO: Currently the session is dropped entirely if the authentication fails. We want to cache and re-use it on the next attempt!
 def authenticate(args):
     global unassigned_session
-    session_id = get_cache("session_id");
-    if session_id and "new" not in args:
+    sess_id = get_cache("session_id");
+    if sess_id and "new" not in args:
         #TODO: Add a check here to make sure that the session hasn't expired
-        finish_auth(session_id)
+        finish_auth(sess_id)
         return
-    session_id = create_session()
-    if session_id:
+    sess_id = create_session()
+    if sess_id:
         user = get_cache("user")
         if not user:
             user = input('Username: ')
@@ -313,7 +321,7 @@ def authenticate(args):
             if input_yes("Remember password"):
                 set_cache("password", password);
                 print(color.GREEN+'Password saved'+color.END)
-        authenticate_session(user, password, session_id)
+        authenticate_session(user, password, sess_id)
 
 def update_queue():
     global authenticated
@@ -332,10 +340,11 @@ def update_queue():
         print_overridable('Loading queue...')
         resultStr = 'Queue loaded'
     data = {
-        'session_id': cookies['sess_id'],
+        'session_id': session_id,
         'fields': 'last_watched_media,last_watched_media_playhead,most_likely_media,most_likely_media_playhead,media.media_id,media.series_id,media.name,media.episode_number,media.available_time,media.duration,media.collection_name,media.url,series,series.name'
     }
-    queueSoup = BeautifulSoup(requests.get('http://api.crunchyroll.com/queue.0.xml', headers=api_headers, params=data, cookies=cookies).text, 'xml')
+
+    queueSoup = BeautifulSoup(call_api('queue', data).text, 'xml')
     queueSoup.encoding = 'utf-8'
     if queueSoup.response.error.text == "true":
         if queueSoup.response.code.text == "bad_session":
@@ -355,7 +364,6 @@ def run_media(pageurl):
         mediaid = re.search(r'[^\d](\d{6})(?:[^\d]|$)', pageurl).group(1)
 
         data = {
-            'req': 'RpcApiVideoPlayer_GetStandardConfig',
             'media_id': mediaid,
             'video_format': '108',
             'video_quality': '80',
@@ -363,8 +371,7 @@ def run_media(pageurl):
         }
 
         print_overridable('Fetching media information...')
-        config = requests.get('http://www.crunchyroll.com/xml/', headers=rpc_headers, params=data, cookies=cookies)
-        config.encoding = 'utf-8'
+        config = call_rpc('RpcApiVideoPlayer_GetStandardConfig', data)
         print_overridable()
         if config.status_code != 200:
             print(color.RED+'Error: '+config.text+color.END)
@@ -409,8 +416,8 @@ def run_media(pageurl):
             open(SUBTITLE_TEMP_PATH, 'w').write(convert(decode_subtitles(_id, _iv, _subdata).decode('utf-8')))
 
         print_overridable('Fetching stream information...')
-        data['req'] = 'RpcApiVideoEncode_GetStreamInfo'
-        streamconfig = BeautifulSoup(requests.post('http://www.crunchyroll.com/xml', headers=rpc_headers, data=data, cookies=cookies).text, 'lxml-xml')
+
+        streamconfig = BeautifulSoup(call_rpc('RpcApiVideoEncode_GetStreamInfo', data).text, 'lxml-xml')
         streamconfig.encoding = 'utf-8'
 
         print_overridable('Starting stream...')
@@ -454,14 +461,12 @@ def run_media(pageurl):
 
         if authenticated and input_yes('Do you want to update seen duration to {}/{}'.format(mmss(playhead), mmss(duration))):
             print_overridable('Updating seen duration...')
-            data = {
-                'req': 'RpcApiVideo_VideoView',
+            resp = call_rpc('RpcApiVideo_VideoView', {
                 'media_id': mediaid,
                 'cbcallcount': 0,
                 'cbelapsed': 30,
                 'playhead': config.duration
-            }
-            resp = requests.get('http://www.crunchyroll.com/xml/', headers=rpc_headers, params=data, cookies=cookies)
+            })
             if resp.status_code != 200:
                 print_overridable(color.RED+'Error: '+resp.text+color.END, True)
             else:
