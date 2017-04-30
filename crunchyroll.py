@@ -430,8 +430,12 @@ def run_media(pageurl):
         print_overridable('Starting stream...')
         playhead = 0
         if not streamconfig.host.text:
+            # If by any chance that GetStreamInfo returns HLS, it should never get to this point
             url = streamconfig.file.text
-            subprocess.call(['mpv', url])
+            subarg = []
+            if sub:
+                subarg = ['--sub-file', SUBTITLE_TEMP_PATH]
+            subprocess.call(['mpv', url] + subarg)
         else:
             host = streamconfig.host.text
             file = streamconfig.file.text
