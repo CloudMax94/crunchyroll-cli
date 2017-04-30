@@ -499,6 +499,7 @@ def run_media(pageurl, playhead = 0):
         if nextEpisode != "":
             if input_yes('Another episode is available, do you want to watch it'):
                 pageurl = nextEpisode
+                playhead = 0
             else:
                 break
         else:
