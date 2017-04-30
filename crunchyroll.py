@@ -40,7 +40,7 @@ API_HOST = 'api.crunchyroll.com'
 RPC_API_HOST = 'www.crunchyroll.com'
 USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:51.0) Gecko/20100101 Firefox/51.0'
 
-queueSoup = None
+queue = None
 ram_cache = None
 
 class color:
@@ -98,7 +98,6 @@ def mmss(seconds):
 def timestamp_to_datetime(ts):
     return (datetime.datetime.strptime(ts[:-7],'%Y-%m-%dT%H:%M:%S') + datetime.timedelta(hours=int(ts[-5:-3]), minutes=int(ts[-2:])) * -int(ts[-6:-5]+'1')).replace(tzinfo=tz.tzutc())
 
-# TODO: Change to JSON
 def call_api(name, params, secure = False):
     protocol = "http"
     if secure: protocol += "s"
@@ -109,7 +108,9 @@ def call_api(name, params, secure = False):
     sess_id = get_cache("session_id")
     if sess_id:
         params['session_id'] = sess_id
-    return requests.post('{}://{}/{}.0.xml'.format(protocol, API_HOST, name), headers=headers, params=params)
+    resp = requests.post('{}://{}/{}.0.json'.format(protocol, API_HOST, name), headers=headers, params=params)
+    resp.encoding = 'utf-8'
+    return resp.json()
 
 def call_rpc(name, params):
     headers = {
@@ -242,6 +243,9 @@ def get_device_id():
     set_cache("device_id", device_id);
     return device_id
 
+# TODO: This sends back your current session id if one is already set
+#       Does it return a new one when the session has expired?
+#       If it does, we can use this to test for expired sessions when authenticating
 def create_session():
     data = {
         "device_id": get_device_id(),
@@ -257,16 +261,16 @@ def create_session():
         data["auth"] = auth
 
     print_overridable('Creating session...')
-    soup = BeautifulSoup(call_api('start_session', data).text, 'xml')
+    resp = call_api('start_session', data)
 
-    if soup.response.error.text == 'true':
-        print_overridable(color.RED+'Error: '+soup.response.message.text+color.END, True)
+    if resp['error']:
+        print_overridable(color.RED+'Error: '+resp['message']+color.END, True)
         return None
     else:
         print_overridable(color.GREEN+'Session created'+color.END, True)
-        sess_id = soup.response.data.session_id.text
-        if not soup.response.data.auth.is_empty_element:
-            finish_auth(sess_id, soup.response.data.auth.text, soup.response.data.expires.text)
+        sess_id = resp['data']['session_id']
+        if resp['data']['auth']:
+            finish_auth(sess_id, resp['data']['auth'], resp['data']['expires'])
             return None #We return None to short-circuit the caller since the session is already authenticated
         return sess_id
 
@@ -277,11 +281,11 @@ def authenticate_session(user, password, sess_id):
         "session_id": sess_id
     }
     print_overridable('Authenticating...')
-    soup = BeautifulSoup(call_api('login', data, True).text, 'xml')
-    if soup.response.error.text == 'true':
-        print_overridable(color.RED+'Error: '+soup.response.message.text+color.END, True)
+    resp = call_api('login', data, True)
+    if resp['error']:
+        print_overridable(color.RED+'Error: '+resp['message']+color.END, True)
     else:
-        finish_auth(sess_id, soup.response.data.auth.text, soup.response.data.expires.text)
+        finish_auth(sess_id, resp['data']['auth'], resp['data']['expires'])
 
 def finish_auth(sess_id, auth, expires):
     set_cache("auth", auth);
@@ -314,38 +318,53 @@ def authenticate(args):
         authenticate_session(user, password, sess_id)
 
 def update_queue():
-    global queueSoup
+    global queue
     if not get_cache("session_id"):
-        if queueSoup:
+        if queue:
             print(color.YELLOW+'Error: Could not update queue. You are not authenticated'+color.END)
         else:
             print(color.RED+'Warning: Could not load queue. You are not authenticated'+color.END)
         return
 
-    if queueSoup:
+    if queue:
         print_overridable('Updating queue...')
         resultStr = 'Queue updated'
     else:
         print_overridable('Loading queue...')
         resultStr = 'Queue loaded'
     data = {
-        'fields': 'last_watched_media,last_watched_media_playhead,most_likely_media,most_likely_media_playhead,media.media_id,media.series_id,media.name,media.episode_number,media.available_time,media.duration,media.collection_name,media.url,series,series.name'
+        'fields': 'last_watched_media,last_watched_media_playhead,most_likely_media,most_likely_media_playhead,media.name,media.episode_number,media.available_time,media.duration,media.collection_name,media.url,series,series.name'
     }
 
-    queueSoup = BeautifulSoup(call_api('queue', data).text, 'xml')
-    queueSoup.encoding = 'utf-8'
-    if queueSoup.response.error.text == "true":
-        if queueSoup.response.code.text == "bad_session":
+    resp = call_api('queue', data)
+    if resp['error']:
+        if resp['code'] == "bad_session":
             msg = "Your session has expired. You are no longer authenticated"
             unset_cache("session_id")
         else:
-            msg = "{} ({})".format(queueSoup.response.message.text, queueSoup.response.code.text)
+            msg = "{} ({})".format(resp['message'], resp['code'])
         print_overridable(color.RED+'Error: Could not fetch queue. '+msg+color.END, True)
     else:
+        queue = resp['data']
+        for index, item in enumerate(queue):
+            # Add missing integer values, and convert them from string to int
+            for key in ['most_likely_media_playhead', 'last_watched_media_playhead']:
+                val = item[key]
+                if not val: val = 0
+                else: val = int(val)
+                queue[index][key] = val
+            for media in ['most_likely_media', 'last_watched_media']:
+                if not item[media]: continue
+                for key in ['duration']:
+                    val = item[media][key]
+                    if not val: val = 0
+                    else: val = int(val)
+                    queue[index][media][key] = val
+                queue[index][media]['available_time'] = timestamp_to_datetime(queue[index][media]['available_time'])
+
         print_overridable(color.GREEN+resultStr+color.END, True)
 
 def run_media(pageurl):
-    global queueSoup
     while True:
         mediaid = re.search(r'[^\d](\d{6})(?:[^\d]|$)', pageurl).group(1)
 
@@ -480,16 +499,11 @@ def show_queue(args = []):
                 crntDay = weekDay
                 print('\n'+color.BOLD+localAir.strftime("%A")+color.END)
 
-    if queueSoup is None or "update" in args:
-        update_queue()
+    if queue is None or "update" in args: update_queue()
+    if queue is None: return
 
-    if queueSoup is None:
-        return
-
-    items = [item for item in queueSoup.find_all('item')]
-    if "following" in args:
-        items.sort(key=lambda e: e.most_likely_media.available_time.string)
-        items.sort(key=lambda e: timestamp_to_datetime(e.most_likely_media.available_time.text).astimezone(tz.tzlocal()).weekday())
+    items = list(queue)
+    if "following" in args: items.sort(key=lambda e: e['most_likely_media']['available_time'].astimezone(tz.tzlocal()).weekday())
 
     title = "All"
     if "following" in args:
@@ -502,27 +516,24 @@ def show_queue(args = []):
     now = datetime.datetime.utcnow().replace(tzinfo=tz.tzutc())
     count = 0
     for item in items:
-        media = item.most_likely_media
-        last_media = item.last_watched_media
-        last_playhead = item.last_watched_media_playhead.text
-        if last_playhead == '':
-            last_playhead = '0'
-        if ("watching" not in args and "following" not in args) or not int(last_playhead) < 1:
-            air = timestamp_to_datetime(media.available_time.text)
+        media = item['most_likely_media']
+        if ("watching" not in args and "following" not in args) or item['last_watched_media_playhead'] > 0:
+            air = media['available_time']
             seconds = math.ceil((now - air).total_seconds())
-            if media.duration.text == "":
+            duration = media['duration']
+            if not duration:
                 following_title(air)
-                print((color.YELLOW+'{} - E{} - {}'+color.END).format(media.collection_name.text, media.episode_number.text, mmss(-seconds)))
+                print((color.YELLOW+'{} - E{} - {}'+color.END).format(media['collection_name'], media['episode_number'], mmss(-seconds)))
                 count += 1
             else:
-                seen = int(item.most_likely_media_playhead.text) >= int(media.duration.text) * QUEUE_WATCHED_THRESHOLD
+                seen = item['most_likely_media_playhead'] >= duration * QUEUE_WATCHED_THRESHOLD
                 if "all" in args or not seen:
                     days = seconds/60/60/24
                     if "following" not in args or days < QUEUE_FOLLOWING_THRESHOLD:
                         following_title(air)
                         if seen:
                             print(color.GREEN, end='')
-                        print('{} - E{} - {}'.format(media.collection_name.text, media.episode_number.text, media.find('name').text))
+                        print('{} - E{} - {}'.format(media['collection_name'], media['episode_number'], media['name']))
                         print(color.END, end='')
                         count += 1
     print('')
@@ -533,42 +544,36 @@ def show_queue(args = []):
 
 
 def run_random(args):
-    if queueSoup is None or "update" in args:
-        update_queue()
-    if queueSoup is None:
-        return
-    items = [item for item in queueSoup.find_all('item')]
+    if queue is None or "update" in args: update_queue()
+    if queue is None: return
+    items = list(queue)
     filtered = []
     for item in items:
-        media = item.most_likely_media
-        last_playhead = item.last_watched_media_playhead.text
-        if last_playhead == '':
-            last_playhead = '0'
-        if not int(last_playhead) < 1:
-            if int(item.most_likely_media_playhead.text) < int(media.duration.text) * QUEUE_WATCHED_THRESHOLD:
+        media = item['most_likely_media']
+        last_playhead = item['last_watched_media_playhead']
+        if last_playhead > 0:
+            if item['most_likely_media_playhead'] < media['duration'] * QUEUE_WATCHED_THRESHOLD:
                 filtered.append(media)
-    run_media(random.choice(filtered).url.text)
+    run_media(random.choice(filtered)['url'])
 
 def run_search(search):
     if search != "":
-        if queueSoup is None:
+        if queue is None:
             update_queue()
-
-        if queueSoup is None:
-            return
+            if queue is None:
+                return
 
         print_overridable('Searching for \"{}\"...'.format(search))
         search = search.lower()
         media = None
-        for item in queueSoup.findAll('item'):
-            series_name = item.series.find('name').text
-            if search in series_name.lower():
-                media = item.most_likely_media
+        for item in queue:
+            if search in item['series']['name'].lower():
+                media = item['most_likely_media']
                 break
         if media:
-            print_overridable("")
-            if input_yes('Found \"{} - E{} - {}\"\nDo you want to watch it'.format(media.collection_name.text, media.episode_number.text, media.find('name').text)):
-                run_media(media.url.text)
+            print_overridable()
+            if input_yes('Found \"{} - E{} - {}\"\nDo you want to watch it'.format(media['collection_name'], media['episode_number'], media['name'])):
+                run_media(media['url'])
         else:
             print_overridable(color.RED+'Could not find any series'+color.END, True)
     else:
