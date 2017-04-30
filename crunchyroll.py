@@ -19,6 +19,7 @@ import json
 from dateutil import tz
 from Crypto.Cipher import AES
 from bs4 import BeautifulSoup
+from shlex import quote
 from sys import argv, exit, stdout
 
 # Where should the cache file be stored?
@@ -231,7 +232,10 @@ def set_cache(arg1, value = None):
 def unset_cache(*keys):
     cache = get_cache()
     for key in keys:
-        del cache[key]
+        try:
+            del cache[key]
+        except KeyError:
+            pass
     set_cache(cache)
 
 def get_device_id():
@@ -429,13 +433,20 @@ def run_media(pageurl):
 
         print_overridable('Starting stream...')
         playhead = 0
+        subarg = []
+        if sub:
+            subarg = ['--sub-file', SUBTITLE_TEMP_PATH]
         if not streamconfig.host.text:
             # If by any chance that GetStreamInfo returns HLS, it should never get to this point
             url = streamconfig.file.text
-            subarg = []
-            if sub:
-                subarg = ['--sub-file', SUBTITLE_TEMP_PATH]
             proccommand = ['mpv', url] + subarg
+            proc = subprocess.Popen(
+                proccommand,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                bufsize=1,
+                shell=True
+            )
 
         else:
             host = streamconfig.host.text
@@ -447,17 +458,19 @@ def run_media(pageurl):
                 url1, = re.findall('.+/ondemand/', host)
                 url2, = re.findall('ondemand/.+', host)
 
-            subarg = ""
-            if sub: subarg = " --sub-file "+SUBTITLE_TEMP_PATH
-            proccommand = "rtmpdump -a '"+url2+"' --flashVer 'WIN 11,8,800,50' -m 15 --pageUrl '"+pageurl+"' --rtmp '"+url1+"' --swfVfy http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf -y '"+file+"' | mpv --force-seekable=yes"+subarg+" -"
+            # proccommand = "rtmpdump -a '"+url2+"' --flashVer 'WIN 11,8,800,50' -m 15 --pageUrl '"+pageurl+"' --rtmp '"+url1+"' --swfVfy http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf -y '"+file+'\''
+            proccommand = ['rtmpdump', '-a', quote(url2), '--flashVer', '"WIN 11,8,800,50"', '-m', '15', '--pageUrl', quote(pageurl), '--rtmp', quote(url1), '--swfVfy', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf', '-y', quote(file)]
 
-        proc = subprocess.Popen(
-            proccommand,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            bufsize=1,
-            shell=True
-        )
+            rtmpproc = subprocess.Popen(proccommand,
+                stdout=subprocess.PIPE
+            )
+            proc = subprocess.Popen(['mpv', '--force-seekable=yes'] + subarg + ['-'],
+                stdin=rtmpproc.stdout,
+                stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                bufsize=1
+            )
+            rtmpproc.stdout.close()  # Allow rtmpproc to receive a SIGPIPE if proc exits.
 
         # Pick up stderr for playhead information
         while True:
