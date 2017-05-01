@@ -433,7 +433,6 @@ def run_media(pageurl, playhead = 0):
 
         print_overridable('Starting stream...')
 
-        playhead = 0
         subarg = []
         if sub:
             subarg = ['--sub-file', quote(SUBTITLE_TEMP_PATH)]
@@ -466,7 +465,8 @@ def run_media(pageurl, playhead = 0):
                 '-m', '15',
                 '-W', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf',
                 '-p', pageurl,
-                '-y', file]
+                '-y', file,
+                '--start', playhead]
 
             rtmpproc = subprocess.Popen(proccommand,
                 stderr=subprocess.DEVNULL,
