@@ -444,8 +444,7 @@ def run_media(pageurl):
                 proccommand,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-                bufsize=1,
-                shell=True
+                bufsize=1
             )
 
         else:
@@ -459,7 +458,15 @@ def run_media(pageurl):
                 url2, = re.findall('ondemand/.+', host)
 
             # proccommand = "rtmpdump -a '"+url2+"' --flashVer 'WIN 11,8,800,50' -m 15 --pageUrl '"+pageurl+"' --rtmp '"+url1+"' --swfVfy http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf -y '"+file+'\''
-            proccommand = ['rtmpdump', '-a', quote(url2), '--flashVer', '"WIN 11,8,800,50"', '-m', '15', '--pageUrl', quote(pageurl), '--rtmp', quote(url1), '--swfVfy', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf', '-y', quote(file)]
+            # proccommand = ['rtmpdump', '-a', quote(url2), '--flashVer', '"WIN 11,8,800,50"', '-m', '15', '--pageUrl', quote(pageurl), '--rtmp', quote(url1), '--swfVfy', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf', '-y', quote(file)]
+            proccommand = ['rtmpdump',
+                '-r', url1,
+                '-a', url2,
+                '-f', 'WIN 11,8,800,50',
+                '-m', '15',
+                '-W', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf',
+                '-p', pageurl,
+                '-y', file]
 
             rtmpproc = subprocess.Popen(proccommand,
                 stdout=subprocess.PIPE
