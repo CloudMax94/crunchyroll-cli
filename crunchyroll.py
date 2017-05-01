@@ -231,11 +231,9 @@ def set_cache(arg1, value = None):
 
 def unset_cache(*keys):
     cache = get_cache()
-    for key in keys:
-        try:
+    for key in set(keys):
+        if key in cache:
             del cache[key]
-        except KeyError:
-            pass
     set_cache(cache)
 
 def get_device_id():
