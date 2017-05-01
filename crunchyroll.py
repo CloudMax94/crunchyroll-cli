@@ -370,7 +370,7 @@ def update_queue():
 
         print_overridable(color.GREEN+resultStr+color.END, True)
 
-def run_media(pageurl):
+def run_media(pageurl, playhead = 0):
     while True:
         mediaid = re.search(r'[^\d](\d{6})(?:[^\d]|$)', pageurl).group(1)
 
@@ -432,10 +432,12 @@ def run_media(pageurl):
         streamconfig.encoding = 'utf-8'
 
         print_overridable('Starting stream...')
+
         playhead = 0
         subarg = []
         if sub:
             subarg = ['--sub-file', quote(SUBTITLE_TEMP_PATH)]
+
         if not streamconfig.host.text:
             # If by any chance that GetStreamInfo returns HLS; it should never get to this point
             url = streamconfig.file.text
@@ -478,21 +480,38 @@ def run_media(pageurl):
             )
             rtmpproc.stdout.close()  # Allow rtmpproc to receive a SIGPIPE if proc exits.
 
-        # Pick up stderr for playhead information
+        set_cache('previous_episode', pageurl)
+        set_cache('previous_playhead', playhead)
+        if playhead:
+            startPosition = mmss(playhead)+'-'
+        else:
+            startPosition = ''
+        downloadPosition = playhead
+        last_update = time.time()
         while True:
             line = proc.stderr.readline().decode("utf-8")
             if line == '' and proc.poll() is not None:
                 break
+
             download = re.search('([\d.]+) kB / ([\d.]+) sec', line)
             if download:
                 downloadPosition = float(download.group(2))
             timestamp = re.search('V: (\d{2}:\d{2}:\d{2}) / (\d{2}:\d{2}:\d{2})', line)
+
             if timestamp:
                 current = [int(i) for i in timestamp.group(1).split(":")]
                 playhead = (current[0]*60+current[1])*60+current[2]
-                print_overridable('Playhead: {}'.format(mmss(playhead)))
-
+                now = time.time()
+                if last_update + 5 < now:
+                    set_cache('previous_playhead', playhead)
+                    last_update = now
+                if "Paused" in line:
+                    paused = ' [PAUSED]'
+                else:
+                    paused = ''
+                print_overridable((color.BOLD+'Playhead:'+color.END+' {}{} '+color.BOLD+'Downloaded:'+color.END+' {}{}').format(mmss(playhead), paused, startPosition, mmss(downloadPosition)))
         print_under()
+        set_cache('previous_playhead', playhead)
         if sub: os.remove(SUBTITLE_TEMP_PATH)
 
         if get_cache("session_id") and input_yes('Do you want to update seen duration to {}/{}'.format(mmss(playhead), mmss(duration))):
@@ -501,7 +520,7 @@ def run_media(pageurl):
                 'media_id': mediaid,
                 'cbcallcount': 0,
                 'cbelapsed': 30,
-                'playhead': config.duration
+                'playhead': playhead
             })
             if resp.status_code != 200:
                 print_overridable(color.RED+'Error: '+resp.text+color.END, True)
@@ -512,6 +531,7 @@ def run_media(pageurl):
         if nextEpisode != "":
             if input_yes('Another episode is available, do you want to watch it'):
                 pageurl = nextEpisode
+                playhead = 0
             else:
                 break
         else:
@@ -596,15 +616,21 @@ def run_search(search):
 
         print_overridable('Searching for \"{}\"...'.format(search))
         search = search.lower()
+        playhead = 0
         media = None
         for item in queue:
             if search in item['series']['name'].lower():
+                playhead = item['most_likely_media_playhead']
                 media = item['most_likely_media']
                 break
         if media:
             print_overridable()
             if input_yes('Found \"{} - E{} - {}\"\nDo you want to watch it'.format(media['collection_name'], media['episode_number'], media['name'])):
-                run_media(media['url'])
+                startTime = 0
+                duration = media['duration']
+                if playhead > 0 and playhead < duration and input_yes('Do you want to continue watching from {}/{}'.format(mmss(playhead), mmss(duration))):
+                    startTime = playhead
+                run_media(media['url'], startTime)
         else:
             print_overridable(color.RED+'Could not find any series'+color.END, True)
     else:
@@ -613,8 +639,9 @@ def run_search(search):
 def show_help(args = []):
     print(
         color.BOLD+'Crunchyroll CLI Help'+color.END+'\n\n'+
-        color.BOLD+'URL'+color.END+'\n'+
-                   '       You can watch a specific episode by providing its crunchyroll.com URL.\n\n'+
+        color.BOLD+'URLs'+color.END+'\n'+
+                   '       <episode url> [<start>]\n'+
+                   '         <start> determines how many seconds into the episode it should start.\n\n'+
         color.BOLD+'COMMANDS'+color.END+'\n'+
         color.BOLD+'       queue'+color.END+' [all] [following|watching] [update]\n'+
                    '         Series where you\'ve seen past the watched threshold on the current episode are hidden unless "all" is provided.\n'+
@@ -622,7 +649,14 @@ def show_help(args = []):
                    '         "following" will filter out all series where an episode has been out for 2 weeks without you watching it.\n'+
                    '         "update" will fetch the queue.\n'+
         color.BOLD+'       watch'+color.END+' <search query>\n'+
+                   '         Search for a show in your queue and watch the episode you\'re currently on.\n'+
+        color.BOLD+'       prev'+color.END+' [resume|<start>]\n'+
+                   '         Watch the last media that was seen in the CLI.\n'+
+                   '         "resume" will continue the episode where it left off.\n'+
+                   '         <start> determines how many seconds into the episode it should start.\n'+
         color.BOLD+'       rand'+color.END+' [update]\n'+
+                   '         Start watching a random episode from your queue.\n'+
+                   '         "update" will fetch the queue.\n'+
         color.BOLD+'       exit'+color.END+'\n'
     )
 
@@ -638,13 +672,29 @@ def main_loop(args = []):
                 authenticate(args[1:])
             elif command == 'rand' or command == 'r':
                 run_random(args[1:])
+            elif command == 'prev' or command == 'p':
+                episode = get_cache('previous_episode')
+                if episode:
+                    playhead = 0
+                    if len(args) > 1:
+                        if args[1] == 'resume':
+                            playhead = get_cache('previous_playhead')
+                            if not playhead: playhead = 0
+                        else:
+                            try: playhead = int(args[1])
+                            except ValueError: pass
+                    run_media(episode, playhead)
             elif command == 'exit':
                 exit()
             elif command == 'help':
                 show_help(args[1:])
             elif re.search('^http(?:s)?://(?:[a-zA-Z]|\d|[$-_@.&+]|[!*\(\),]|(?:%[\w][\w]))+$', args[0]):
                 if re.search(r'[\D](\d{6})(?:[\D]|$)', args[0]):
-                    run_media(args[0])
+                    playhead = 0
+                    if len(args) > 1:
+                        try: playhead = int(args[1])
+                        except ValueError: pass
+                    run_media(args[0], playhead)
                 else:
                     print(color.RED+'Error: Unknown url format'+color.END)
             else:
