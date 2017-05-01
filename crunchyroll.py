@@ -19,6 +19,7 @@ import json
 from dateutil import tz
 from Crypto.Cipher import AES
 from bs4 import BeautifulSoup
+from shlex import quote
 from sys import argv, exit, stdout
 
 # Where should the cache file be stored?
@@ -423,7 +424,7 @@ def run_media(pageurl):
             _iv = sub.iv.text
             _subdata = sub.data.text
             # print(_id, _iv, _subdata)
-            open(SUBTITLE_TEMP_PATH, 'w').write(convert(decode_subtitles(_id, _iv, _subdata).decode('utf-8')))
+            open(quote(SUBTITLE_TEMP_PATH), 'w').write(convert(decode_subtitles(_id, _iv, _subdata).decode('utf-8')))
 
         print_overridable('Fetching stream information...')
 
@@ -434,7 +435,7 @@ def run_media(pageurl):
         playhead = 0
         subarg = []
         if sub:
-            subarg = ['--sub-file', SUBTITLE_TEMP_PATH]
+            subarg = ['--sub-file', quote(SUBTITLE_TEMP_PATH)]
         if not streamconfig.host.text:
             # If by any chance that GetStreamInfo returns HLS; it should never get to this point
             url = streamconfig.file.text
@@ -489,7 +490,7 @@ def run_media(pageurl):
                 print_overridable('Playhead: {}'.format(mmss(playhead)))
 
         print_under()
-        if sub: os.remove(SUBTITLE_TEMP_PATH)
+        if sub: os.remove(quote(SUBTITLE_TEMP_PATH))
 
         if get_cache("session_id") and input_yes('Do you want to update seen duration to {}/{}'.format(mmss(playhead), mmss(duration))):
             print_overridable('Updating seen duration...')
