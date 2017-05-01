@@ -470,7 +470,7 @@ def run_media(pageurl):
                 stderr=subprocess.DEVNULL,
                 stdout=subprocess.PIPE
             )
-            proc = subprocess.Popen(['mpv', '--force-seekable=yes', '-'] + subarg,
+            proc = subprocess.Popen(['mpv', '--force-seekable=yes', '--rebase-start-time=no', '-'] + subarg,
                 stdin=rtmpproc.stdout,
                 stderr=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
@@ -483,7 +483,10 @@ def run_media(pageurl):
             line = proc.stderr.readline().decode("utf-8")
             if line == '' and proc.poll() is not None:
                 break
-            timestamp = re.search('AV: (\d{2}:\d{2}:\d{2}) / (\d{2}:\d{2}:\d{2})', line)
+            download = re.search('([\d.]+) kB / ([\d.]+) sec', line)
+            if download:
+                downloadPosition = float(download.group(2))
+            timestamp = re.search('V: (\d{2}:\d{2}:\d{2}) / (\d{2}:\d{2}:\d{2})', line)
             if timestamp:
                 current = [int(i) for i in timestamp.group(1).split(":")]
                 playhead = (current[0]*60+current[1])*60+current[2]
