@@ -15,6 +15,7 @@ import time
 import string
 import getpass
 import json
+import concurrent.futures
 
 from dateutil import tz
 from Crypto.Cipher import AES
@@ -27,6 +28,8 @@ from sys import argv, exit, stdout
 CACHE_PATH = os.path.dirname(os.path.realpath(__file__))+'/.crcache'
 # Where should the subtitle file be stored?
 SUBTITLE_TEMP_PATH = os.path.dirname(os.path.realpath(__file__))+'/.ass'
+# Where should the temporary RTMP info file be stored? (used to extract info from stderr)
+RTMP_INFO_TEMP_PATH = os.path.dirname(os.path.realpath(__file__))+'/.rtmpinfo'
 
 # How many days must pass before the show isn't considered followed
 QUEUE_FOLLOWING_THRESHOLD = 14
@@ -34,6 +37,8 @@ QUEUE_FOLLOWING_THRESHOLD = 14
 QUEUE_WATCHED_THRESHOLD = 0.8
 # Should it authenticate automatically on startup?
 AUTHENTICATE = True
+# Update playhead automatically every n seconds while watching media (0 = never)
+AUTO_PLAYHEAD = 0
 
 # END OF CONFIGURATION
 
@@ -415,7 +420,7 @@ def run_media(pageurl, playhead = 0):
         duration = config.duration.text
         print('{} - E{}'.format(series, epnum))
         print(episode)
-        print('Duration: {}'.format(mmss(duration)))
+        print(color.BOLD+'Duration:'+color.END+' {}'.format(mmss(duration)))
 
         sub = config.find('subtitle', attrs={'link': None})
         if sub:
@@ -437,6 +442,7 @@ def run_media(pageurl, playhead = 0):
         if sub:
             subarg = ['--sub-file', quote(SUBTITLE_TEMP_PATH)]
 
+        rtmpinfo = None
         if not streamconfig.host.text:
             # If by any chance that GetStreamInfo returns HLS; it should never get to this point
             url = streamconfig.file.text
@@ -466,10 +472,10 @@ def run_media(pageurl, playhead = 0):
                 '-W', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf',
                 '-p', pageurl,
                 '-y', file,
-                '--start', playhead]
-
+                '--start', str(playhead)]
+            rtmpinfo = open(RTMP_INFO_TEMP_PATH, 'w+')
             rtmpproc = subprocess.Popen(proccommand,
-                stderr=subprocess.DEVNULL,
+                stderr=rtmpinfo, # NOTE: There is probably a much better way to obtain stderr without blocking, but I gave up and went with whatever worked
                 stdout=subprocess.PIPE
             )
             proc = subprocess.Popen(['mpv', '--force-seekable=yes', '--rebase-start-time=no', '-'] + subarg,
@@ -488,33 +494,82 @@ def run_media(pageurl, playhead = 0):
             startPosition = ''
         downloadPosition = playhead
         last_update = time.time()
-        while True:
-            line = proc.stderr.readline().decode("utf-8")
-            if line == '' and proc.poll() is not None:
-                break
+        playhead_update = last_update
+        playhead_count = 0
+        def update_playhead(mediaid, playhead):
+            nonlocal playhead_count
+            resp = call_rpc('RpcApiVideo_VideoView', {
+                'media_id': mediaid,
+                'cbcallcount': playhead_count,
+                'cbelapsed': 30,
+                'playhead': playhead
+            })
+            if resp.status_code != 200:
+                print_overridable(color.RED+'Error: '+resp.text+color.END, True)
+                return False
+            else:
+                playhead_count += 1
+                print_overridable((color.GREEN+'Seen duration was updated to {}'+color.END).format(mmss(playhead)), True)
+                return True
 
-            download = re.search('([\d.]+) kB / ([\d.]+) sec', line)
-            if download:
-                downloadPosition = float(download.group(2))
-            timestamp = re.search('V: (\d{2}:\d{2}:\d{2}) / (\d{2}:\d{2}:\d{2})', line)
+        rtmpMetadata = None
+        rtmpInfoDone = False
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            while True:
+                line = proc.stderr.readline().decode("utf-8")
+                if line == '' and proc.poll() is not None:
+                    break
 
-            if timestamp:
-                current = [int(i) for i in timestamp.group(1).split(":")]
-                playhead = (current[0]*60+current[1])*60+current[2]
-                now = time.time()
-                if last_update + 5 < now:
-                    set_cache('previous_playhead', playhead)
-                    last_update = now
-                if "Paused" in line:
-                    paused = ' [PAUSED]'
-                else:
-                    paused = ''
-                print_overridable((color.BOLD+'Playhead:'+color.END+' {}{} '+color.BOLD+'Downloaded:'+color.END+' {}{}').format(mmss(playhead), paused, startPosition, mmss(downloadPosition)))
+                if rtmpinfo:
+                    rtmpinfo.seek(0)
+                    for line2 in rtmpinfo.readlines():
+                        if line2.rstrip() == '':
+                            continue
+                        r = re.search('([\d.]+) kB / ([\d.]+) sec', line2)
+                        if r:
+                            downloadPosition = float(r.group(2))
+                        elif not rtmpInfoDone:
+                            r = re.search('INFO: ([^ ]+):', line2)
+                            if r:
+                                if rtmpMetadata:
+                                    print_overridable(color.BOLD+'Video:'+color.END+'    {}x{} ({})'.format(int(float(rtmpMetadata['width'])), int(float(rtmpMetadata['height'])), rtmpMetadata['videocodecid']), True)
+                                    print(color.BOLD+'Audio:'+color.END+'    {}hz ({})'.format(int(float(rtmpMetadata['audiosamplerate'])), rtmpMetadata['audiocodecid']))
+                                    rtmpInfoDone = True
+                                else:
+                                    rtmpMetadata = {}
+                            else:
+                                r = re.search('INFO:   ([^ ]+) +(.+)', line2)
+                                if r:
+                                    rtmpMetadata[r.group(1)] = r.group(2)
+
+                    # Empty the file to prevent taking up unnecessary space
+                    rtmpinfo.seek(0)
+                    rtmpinfo.truncate()
+
+                timestamp = re.search('V: (\d{2}:\d{2}:\d{2}) / (\d{2}:\d{2}:\d{2})', line)
+                if timestamp:
+                    current = [int(i) for i in timestamp.group(1).split(":")]
+                    playhead = (current[0]*60+current[1])*60+current[2]
+                    now = time.time()
+                    if AUTO_PLAYHEAD and now >= playhead_update + AUTO_PLAYHEAD:
+                        playhead_update = now
+                        executor.submit(update_playhead, mediaid, playhead)
+                    if now >= last_update + 5:
+                        set_cache('previous_playhead', playhead)
+                        last_update = now
+                    if "Paused" in line:
+                        paused = ' [PAUSED]'
+                    else:
+                        paused = ''
+                    print_overridable((color.BOLD+'Downloaded:'+color.END+' {}{} '+color.BOLD+'Playhead:'+color.END+' {}{}').format(startPosition, mmss(downloadPosition), mmss(playhead), paused))
         print_under()
         set_cache('previous_playhead', playhead)
+        if rtmpinfo:
+            rtmpinfo.close()
+            os.remove(RTMP_INFO_TEMP_PATH)
         if sub: os.remove(SUBTITLE_TEMP_PATH)
 
-        if get_cache("session_id") and input_yes('Do you want to update seen duration to {}/{}'.format(mmss(playhead), mmss(duration))):
+        if not AUTO_PLAYHEAD and get_cache("session_id") and input_yes('Do you want to update seen duration to {}/{}'.format(mmss(playhead), mmss(duration))):
             print_overridable('Updating seen duration...')
             resp = call_rpc('RpcApiVideo_VideoView', {
                 'media_id': mediaid,
