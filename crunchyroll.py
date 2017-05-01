@@ -19,6 +19,7 @@ import json
 from dateutil import tz
 from Crypto.Cipher import AES
 from bs4 import BeautifulSoup
+from shlex import quote
 from sys import argv, exit, stdout
 
 # Where should the cache file be stored?
@@ -231,7 +232,10 @@ def set_cache(arg1, value = None):
 def unset_cache(*keys):
     cache = get_cache()
     for key in keys:
-        del cache[key]
+        try:
+            del cache[key]
+        except KeyError:
+            pass
     set_cache(cache)
 
 def get_device_id():
@@ -428,35 +432,53 @@ def run_media(pageurl, playhead = 0):
         streamconfig.encoding = 'utf-8'
 
         print_overridable('Starting stream...')
+
+        playhead = 0
+        subarg = []
+        if sub:
+            subarg = ['--sub-file', quote(SUBTITLE_TEMP_PATH)]
+
         if not streamconfig.host.text:
-            # If by any chance that GetStreamInfo returns HLS, it should never get to this point
+            # If by any chance that GetStreamInfo returns HLS; it should never get to this point
             url = streamconfig.file.text
-            subarg = []
-            if sub:
-                subarg = ['--sub-file', SUBTITLE_TEMP_PATH]
             proccommand = ['mpv', url] + subarg
+            proc = subprocess.Popen(
+                proccommand,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                bufsize=1
+            )
 
         else:
             host = streamconfig.host.text
             file = streamconfig.file.text
             if re.search('fplive\.net', host):
-                url1, = re.findall('.+/c[0-9]+', host)
-                url2, = re.findall('c[0-9]+\?.+', host)
+                url1, = re.findall('.+/c\d+', host)
+                url2, = re.findall('c\d+\?.+', host)
             else:
                 url1, = re.findall('.+/ondemand/', host)
                 url2, = re.findall('ondemand/.+', host)
 
-            subarg = ""
-            if sub: subarg = " --sub-file '"+SUBTITLE_TEMP_PATH+"'"
-            proccommand = "rtmpdump -a '"+url2+"' --flashVer 'WIN 11,8,800,50' -m 15 --pageUrl '"+pageurl+"' --rtmp '"+url1+"' --swfVfy http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf -y '"+file+"' --start "+str(playhead)+" | mpv --rebase-start-time=no --force-seekable=yes"+subarg+" -"
+            proccommand = ['rtmpdump',
+                '-r', url1,
+                '-a', url2,
+                '-f', 'WIN 11,8,800,50',
+                '-m', '15',
+                '-W', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf',
+                '-p', pageurl,
+                '-y', file]
 
-        proc = subprocess.Popen(
-            proccommand,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            bufsize=1,
-            shell=True
-        )
+            rtmpproc = subprocess.Popen(proccommand,
+                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE
+            )
+            proc = subprocess.Popen(['mpv', '--force-seekable=yes', '--rebase-start-time=no', '-'] + subarg,
+                stdin=rtmpproc.stdout,
+                stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                bufsize=1
+            )
+            rtmpproc.stdout.close()  # Allow rtmpproc to receive a SIGPIPE if proc exits.
 
         set_cache('previous_episode', pageurl)
         set_cache('previous_playhead', playhead)
@@ -470,9 +492,12 @@ def run_media(pageurl, playhead = 0):
             line = proc.stderr.readline().decode("utf-8")
             if line == '' and proc.poll() is not None:
                 break
-            download = re.search('([0-9.]+) kB / ([0-9.]+) sec', line)
-            if download: downloadPosition = float(download.group(2))
-            timestamp = re.search('V: ([0-9]{2}:[0-9]{2}:[0-9]{2}) / ([0-9]{2}:[0-9]{2}:[0-9]{2})', line)
+
+            download = re.search('([\d.]+) kB / ([\d.]+) sec', line)
+            if download:
+                downloadPosition = float(download.group(2))
+            timestamp = re.search('V: (\d{2}:\d{2}:\d{2}) / (\d{2}:\d{2}:\d{2})', line)
+
             if timestamp:
                 current = [int(i) for i in timestamp.group(1).split(":")]
                 playhead = (current[0]*60+current[1])*60+current[2]
@@ -663,8 +688,8 @@ def main_loop(args = []):
                 exit()
             elif command == 'help':
                 show_help(args[1:])
-            elif re.search('^http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+$', args[0]):
-                if re.search(r'[^\d](\d{6})(?:[^\d]|$)', args[0]):
+            elif re.search('^http(?:s)?://(?:[a-zA-Z]|\d|[$-_@.&+]|[!*\(\),]|(?:%[\w][\w]))+$', args[0]):
+                if re.search(r'[\D](\d{6})(?:[\D]|$)', args[0]):
                     playhead = 0
                     if len(args) > 1:
                         try: playhead = int(args[1])
