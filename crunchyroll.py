@@ -19,7 +19,6 @@ import json
 from dateutil import tz
 from Crypto.Cipher import AES
 from bs4 import BeautifulSoup
-from shlex import quote
 from sys import argv, exit, stdout
 
 # Where should the cache file be stored?
@@ -437,7 +436,7 @@ def run_media(pageurl):
         if sub:
             subarg = ['--sub-file', SUBTITLE_TEMP_PATH]
         if not streamconfig.host.text:
-            # If by any chance that GetStreamInfo returns HLS, it should never get to this point
+            # If by any chance that GetStreamInfo returns HLS; it should never get to this point
             url = streamconfig.file.text
             proccommand = ['mpv', url] + subarg
             proc = subprocess.Popen(
@@ -451,14 +450,12 @@ def run_media(pageurl):
             host = streamconfig.host.text
             file = streamconfig.file.text
             if re.search('fplive\.net', host):
-                url1, = re.findall('.+/c[0-9]+', host)
-                url2, = re.findall('c[0-9]+\?.+', host)
+                url1, = re.findall('.+/c\d+', host)
+                url2, = re.findall('c\d+\?.+', host)
             else:
                 url1, = re.findall('.+/ondemand/', host)
                 url2, = re.findall('ondemand/.+', host)
 
-            # proccommand = "rtmpdump -a '"+url2+"' --flashVer 'WIN 11,8,800,50' -m 15 --pageUrl '"+pageurl+"' --rtmp '"+url1+"' --swfVfy http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf -y '"+file+'\''
-            # proccommand = ['rtmpdump', '-a', quote(url2), '--flashVer', '"WIN 11,8,800,50"', '-m', '15', '--pageUrl', quote(pageurl), '--rtmp', quote(url1), '--swfVfy', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf', '-y', quote(file)]
             proccommand = ['rtmpdump',
                 '-r', url1,
                 '-a', url2,
@@ -469,9 +466,10 @@ def run_media(pageurl):
                 '-y', file]
 
             rtmpproc = subprocess.Popen(proccommand,
+                stderr=subprocess.DEVNULL,
                 stdout=subprocess.PIPE
             )
-            proc = subprocess.Popen(['mpv', '--force-seekable=yes'] + subarg + ['-'],
+            proc = subprocess.Popen(['mpv', '--force-seekable=yes', '-'] + subarg,
                 stdin=rtmpproc.stdout,
                 stderr=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
@@ -484,7 +482,7 @@ def run_media(pageurl):
             line = proc.stderr.readline().decode("utf-8")
             if line == '' and proc.poll() is not None:
                 break
-            timestamp = re.search('AV: ([0-9]{2}:[0-9]{2}:[0-9]{2}) / ([0-9]{2}:[0-9]{2}:[0-9]{2})', line)
+            timestamp = re.search('AV: (\d{2}:\d{2}:\d{2}) / (\d{2}:\d{2}:\d{2})', line)
             if timestamp:
                 current = [int(i) for i in timestamp.group(1).split(":")]
                 playhead = (current[0]*60+current[1])*60+current[2]
@@ -640,8 +638,8 @@ def main_loop(args = []):
                 exit()
             elif command == 'help':
                 show_help(args[1:])
-            elif re.search('^http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+$', args[0]):
-                if re.search(r'[^\d](\d{6})(?:[^\d]|$)', args[0]):
+            elif re.search('^http(?:s)?://(?:[a-zA-Z]|\d|[$-_@.&+]|[!*\(\),]|(?:%[\w][\w]))+$', args[0]):
+                if re.search(r'[\D](\d{6})(?:[\D]|$)', args[0]):
                     run_media(args[0])
                 else:
                     print(color.RED+'Error: Unknown url format'+color.END)
