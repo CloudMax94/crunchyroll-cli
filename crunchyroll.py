@@ -384,7 +384,7 @@ def update_queue():
         print_overridable('Loading queue...')
         resultStr = 'Queue loaded'
     data = {
-        'fields': 'last_watched_media_playhead,most_likely_media,most_likely_media_playhead,media.name,media.episode_number,media.available_time,media.duration,media.collection_name,media.url,series,series.name,series.series_id'
+        'fields': 'last_watched_media_playhead,most_likely_media,media.name,media.episode_number,media.available_time,media.duration,media.collection_name,media.url,series,series.name,series.series_id,media.playhead'
     }
 
     resp = call_api('queue', data)
@@ -399,14 +399,14 @@ def update_queue():
         queue = resp['data']
         for index, item in enumerate(queue):
             # Add missing integer values, and convert them from string to int
-            for key in ['most_likely_media_playhead', 'last_watched_media_playhead']:
+            for key in ['last_watched_media_playhead']:
                 val = item[key]
                 if not val: val = 0
                 else: val = int(val)
                 queue[index][key] = val
             for media in ['most_likely_media']: # , 'last_watched_media'
                 if not item[media]: continue
-                for key in ['duration']:
+                for key in ['duration', 'playhead']:
                     val = item[media][key]
                     if not val: val = 0
                     else: val = int(val)
@@ -681,7 +681,7 @@ def show_queue(args = []):
                 print(color.YELLOW+format_media_display(media)+color.END)
                 count += 1
             else:
-                seen = item['most_likely_media_playhead'] >= media['duration'] * QUEUE_WATCHED_THRESHOLD
+                seen = media['playhead'] >= media['duration'] * QUEUE_WATCHED_THRESHOLD
                 if "all" in args or not seen:
                     days = math.ceil((now - air).total_seconds())/60/60/24
                     if "following" not in args or days < QUEUE_FOLLOWING_THRESHOLD:
@@ -704,10 +704,9 @@ def run_random(args):
     items = list(queue)
     filtered = []
     for item in items:
-        media = item['most_likely_media']
-        last_playhead = item['last_watched_media_playhead']
-        if last_playhead > 0:
-            if item['most_likely_media_playhead'] < media['duration'] * QUEUE_WATCHED_THRESHOLD:
+        if item['last_watched_media_playhead'] > 0:
+            media = item['most_likely_media']
+            if media['playhead'] < media['duration'] * QUEUE_WATCHED_THRESHOLD:
                 filtered.append(media)
     run_media(random.choice(filtered)['url'])
 
@@ -720,18 +719,18 @@ def run_search(search):
 
         print_overridable('Searching for \"{}\"...'.format(search))
         search = search.lower()
-        playhead = 0
         media = None
         for item in queue:
             if search in item['series']['name'].lower():
-                playhead = item['most_likely_media_playhead']
                 media = item['most_likely_media']
                 break
         if media:
             print_overridable()
+            print(item)
             if input_yes('Found \"{}\"\nDo you want to watch it'.format(format_media_display(media))):
                 startTime = 0
                 duration = media['duration']
+                playhead = media['playhead']
                 if playhead > 0 and playhead < duration and input_yes('Do you want to continue watching from {}/{}'.format(mmss(playhead), mmss(duration))):
                     startTime = playhead
                 run_media(media['url'], startTime)
