@@ -726,7 +726,6 @@ def run_search(search):
                 break
         if media:
             print_overridable()
-            print(item)
             if input_yes('Found \"{}\"\nDo you want to watch it'.format(format_media_display(media))):
                 startTime = 0
                 duration = media['duration']
