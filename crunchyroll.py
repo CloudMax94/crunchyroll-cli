@@ -455,14 +455,16 @@ def run_media(pageurl, playhead = 0):
             print(color.RED+'Error: Media is only available for premium members'+color.END)
             return
 
-        nextEpisode = config.find('nextUrl').text
-        series = config.series_title.text
-        epnum = config.episode_number.text
-        episode = config.episode_title.text
+        collection_name = config.series_title.text
+        print(color.BOLD+collection_name+color.END)
+        media_name = config.episode_title.text
+        episode = config.episode_number.text
+        if episode:
+            print(color.BOLD+'Episode:    '+color.END+episode)
+        if media_name:
+            print(color.BOLD+'Title:      '+color.END+media_name)
         duration = config.duration.text
-        print('{} - E{}'.format(series, epnum))
-        print(episode)
-        print(color.BOLD+'Duration:'+color.END+' {}'.format(mmss(duration)))
+        print(color.BOLD+'Duration:   '+color.END+'{}'.format(mmss(duration)))
 
         sub = config.find('subtitle', attrs={'link': None})
         if sub:
@@ -574,8 +576,8 @@ def run_media(pageurl, playhead = 0):
                             r = re.search('INFO: ([^ ]+):', line2)
                             if r:
                                 if rtmpMetadata:
-                                    print_overridable(color.BOLD+'Video:'+color.END+'    {}x{} ({})'.format(int(float(rtmpMetadata['width'])), int(float(rtmpMetadata['height'])), rtmpMetadata['videocodecid']), True)
-                                    print(color.BOLD+'Audio:'+color.END+'    {}hz ({})'.format(int(float(rtmpMetadata['audiosamplerate'])), rtmpMetadata['audiocodecid']))
+                                    print_overridable(color.BOLD+'Video:      '+color.END+'{}x{} ({})'.format(int(float(rtmpMetadata['width'])), int(float(rtmpMetadata['height'])), rtmpMetadata['videocodecid']), True)
+                                    print(color.BOLD+'Audio:      '+color.END+'{}hz ({})'.format(int(float(rtmpMetadata['audiosamplerate'])), rtmpMetadata['audiocodecid']))
                                     rtmpInfoDone = True
                                 else:
                                     rtmpMetadata = {}
@@ -618,6 +620,7 @@ def run_media(pageurl, playhead = 0):
         if playhead_count: #if playhead was updated at least once, we need to update the queue
             update_queue()
 
+        nextEpisode = config.find('nextUrl').text
         if nextEpisode != "":
             if input_yes('Another episode is available, do you want to watch it'):
                 pageurl = nextEpisode
@@ -627,6 +630,20 @@ def run_media(pageurl, playhead = 0):
         else:
             print(color.RED+'No more episodes available'+color.END)
             break
+
+def format_media_display(media):
+    s = media['collection_name']
+    ep = media['episode_number']
+    if ep: # Some media does not have an episode number
+        s += " – E" + ep
+    if media['name']: # Episode might not have a name set
+        if ep or media['name'] != media['collection_name']: # If no episode numer is set, and both names are equal, it's likely a movie/special
+            s += " – " + media['name']
+    air = media['available_time']
+    now = datetime.datetime.utcnow().replace(tzinfo=tz.tzutc())
+    if air >= now: # Show air time if episode hasn't aired yet
+        s += " – " + air.strftime("%b %d %H:%M")
+    return s
 
 def show_queue(args = []):
     crntDay = -1
@@ -661,7 +678,7 @@ def show_queue(args = []):
             air = media['available_time']
             if not media['duration'] or air >= now:
                 following_title(air)
-                print((color.YELLOW+'{} - E{} - {}'+color.END).format(media['collection_name'], media['episode_number'], air.strftime("%b %d %H:%M")))
+                print(color.YELLOW+format_media_display(media)+color.END)
                 count += 1
             else:
                 seen = item['most_likely_media_playhead'] >= media['duration'] * QUEUE_WATCHED_THRESHOLD
@@ -671,7 +688,7 @@ def show_queue(args = []):
                         following_title(air)
                         if seen:
                             print(color.GREEN, end='')
-                        print('{} - E{} - {}'.format(media['collection_name'], media['episode_number'], media['name']))
+                        print(format_media_display(media))
                         print(color.END, end='')
                         count += 1
     print('')
@@ -712,7 +729,7 @@ def run_search(search):
                 break
         if media:
             print_overridable()
-            if input_yes('Found \"{} - E{} - {}\"\nDo you want to watch it'.format(media['collection_name'], media['episode_number'], media['name'])):
+            if input_yes('Found \"{}\"\nDo you want to watch it'.format(format_media_display(media))):
                 startTime = 0
                 duration = media['duration']
                 if playhead > 0 and playhead < duration and input_yes('Do you want to continue watching from {}/{}'.format(mmss(playhead), mmss(duration))):
