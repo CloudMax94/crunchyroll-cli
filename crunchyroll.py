@@ -37,8 +37,12 @@ QUEUE_FOLLOWING_THRESHOLD = 14
 QUEUE_WATCHED_THRESHOLD = 0.8
 # Should it authenticate automatically on startup?
 AUTHENTICATE = True
+# Should notifications be sent when a new episode of a series you're following becomes available?
+NOTIFICATIONS = True
 # Update playhead automatically every n seconds while watching media (0 = never)
 AUTO_PLAYHEAD = 0
+# Should playhead be updated without asking after watching media?
+AUTO_PLAYHEAD_END = False
 
 # END OF CONFIGURATION
 
@@ -102,7 +106,7 @@ def mmss(seconds):
     return stamp
 
 def timestamp_to_datetime(ts):
-    return (datetime.datetime.strptime(ts[:-7],'%Y-%m-%dT%H:%M:%S') + datetime.timedelta(hours=int(ts[-5:-3]), minutes=int(ts[-2:])) * -int(ts[-6:-5]+'1')).replace(tzinfo=tz.tzutc())
+    return (datetime.datetime.strptime(ts[:-7],'%Y-%m-%dT%H:%M:%S') + datetime.timedelta(hours=int(ts[-5:-3]), minutes=int(ts[-2:])) * -int(ts[-6:-5]+'1')).replace(tzinfo=tz.tzutc()).astimezone(tz.tzlocal())
 
 def call_api(name, params, secure = False):
     protocol = "http"
@@ -326,6 +330,44 @@ def authenticate(args):
                 print(color.GREEN+'Password saved'+color.END)
         authenticate_session(user, password, sess_id)
 
+def update_notifications():
+    notifications = get_cache('notifications')
+    if not notifications:
+        notifications = {}
+    items = list(queue)
+    now = datetime.datetime.utcnow().replace(tzinfo=tz.tzutc())
+    for item in items:
+        media = item['most_likely_media']
+        if item['last_watched_media_playhead'] > 0:
+            air = media['available_time']
+            seriesId = item['series']['series_id']
+            if air > now:
+                airSeconds = int(time.mktime(air.timetuple()))
+                if seriesId not in notifications or airSeconds != notifications[seriesId][1]:
+                    if seriesId in notifications: # An outdated notification is set, remove it!
+                        proc = subprocess.Popen(["atrm", notifications[seriesId][0]])
+                    proc = subprocess.Popen(
+                        ['at', air.strftime("%H%M %d.%m.%y")],
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE
+                    )
+                    if media['episode_number']:
+                        episode = ' episode '+media['episode_number']
+                    else:
+                        episode = ''
+                    cmd = "notify-send 'Crunchyroll CLI' '{}{} is now available.'".format(
+                        media['collection_name'].replace("'", "'\\''"),
+                        episode
+                    )
+                    output = proc.communicate(input=cmd.encode())[1]
+                    result = re.search(b'job ([\d]+)', output)
+                    if result:
+                        notifications[item['series']['series_id']] = [result.group(1).decode("utf-8"), airSeconds]
+            elif seriesId in notifications:
+                del notifications[seriesId]
+    set_cache('notifications', notifications)
+
 def update_queue():
     global queue
     if not get_cache("session_id"):
@@ -342,7 +384,7 @@ def update_queue():
         print_overridable('Loading queue...')
         resultStr = 'Queue loaded'
     data = {
-        'fields': 'last_watched_media,last_watched_media_playhead,most_likely_media,most_likely_media_playhead,media.name,media.episode_number,media.available_time,media.duration,media.collection_name,media.url,series,series.name'
+        'fields': 'last_watched_media_playhead,most_likely_media,most_likely_media_playhead,media.name,media.episode_number,media.available_time,media.duration,media.collection_name,media.url,series,series.name,series.series_id'
     }
 
     resp = call_api('queue', data)
@@ -362,7 +404,7 @@ def update_queue():
                 if not val: val = 0
                 else: val = int(val)
                 queue[index][key] = val
-            for media in ['most_likely_media', 'last_watched_media']:
+            for media in ['most_likely_media']: # , 'last_watched_media'
                 if not item[media]: continue
                 for key in ['duration']:
                     val = item[media][key]
@@ -372,6 +414,8 @@ def update_queue():
                 queue[index][media]['available_time'] = timestamp_to_datetime(queue[index][media]['available_time'])
 
         print_overridable(color.GREEN+resultStr+color.END, True)
+    if NOTIFICATIONS:
+        update_notifications()
 
 def run_media(pageurl, playhead = 0):
     while True:
@@ -507,7 +551,7 @@ def run_media(pageurl, playhead = 0):
                 return False
             else:
                 playhead_count += 1
-                print_overridable((color.GREEN+'Seen duration was updated to {}'+color.END).format(mmss(playhead)), True)
+                print_overridable((color.GREEN+'Playhead was updated to {}'+color.END).format(mmss(playhead)), True)
                 return True
 
         rtmpMetadata = None
@@ -549,7 +593,7 @@ def run_media(pageurl, playhead = 0):
                     current = [int(i) for i in timestamp.group(1).split(":")]
                     playhead = (current[0]*60+current[1])*60+current[2]
                     now = time.time()
-                    if AUTO_PLAYHEAD and now >= playhead_update + AUTO_PLAYHEAD:
+                    if get_cache("session_id") and AUTO_PLAYHEAD and now >= playhead_update + AUTO_PLAYHEAD:
                         playhead_update = now
                         executor.submit(update_playhead, mediaid, playhead)
                     if now >= last_update + 5:
@@ -567,19 +611,12 @@ def run_media(pageurl, playhead = 0):
             os.remove(RTMP_INFO_TEMP_PATH)
         if sub: os.remove(SUBTITLE_TEMP_PATH)
 
-        if not AUTO_PLAYHEAD and get_cache("session_id") and input_yes('Do you want to update seen duration to {}/{}'.format(mmss(playhead), mmss(duration))):
-            print_overridable('Updating seen duration...')
-            resp = call_rpc('RpcApiVideo_VideoView', {
-                'media_id': mediaid,
-                'cbcallcount': 0,
-                'cbelapsed': 30,
-                'playhead': playhead
-            })
-            if resp.status_code != 200:
-                print_overridable(color.RED+'Error: '+resp.text+color.END, True)
-            else:
-                print_overridable(color.GREEN+'Seen duration was saved'+color.END, True)
-                update_queue() #We update the queue after marking episode as seen!
+        if get_cache("session_id") and (AUTO_PLAYHEAD_END or input_yes('Do you want to update playhead to {}/{}'.format(mmss(playhead), mmss(duration)))):
+            print_overridable('Updating playhead...')
+            update_playhead(mediaid, playhead)
+
+        if playhead_count: #if playhead was updated at least once, we need to update the queue
+            update_queue()
 
         if nextEpisode != "":
             if input_yes('Another episode is available, do you want to watch it'):
@@ -597,17 +634,16 @@ def show_queue(args = []):
         nonlocal args
         nonlocal crntDay
         if "following" in args:
-            localAir = air.astimezone(tz.tzlocal())
-            weekDay = localAir.weekday()
+            weekDay = air.weekday()
             if weekDay > crntDay:
                 crntDay = weekDay
-                print('\n'+color.BOLD+localAir.strftime("%A")+color.END)
+                print('\n'+color.BOLD+air.strftime("%A")+color.END)
 
     if queue is None or "update" in args: update_queue()
     if queue is None: return
 
     items = list(queue)
-    if "following" in args: items.sort(key=lambda e: e['most_likely_media']['available_time'].astimezone(tz.tzlocal()).weekday())
+    if "following" in args: items.sort(key=lambda e: e['most_likely_media']['available_time'].weekday())
 
     title = "All"
     if "following" in args:
@@ -623,16 +659,14 @@ def show_queue(args = []):
         media = item['most_likely_media']
         if ("watching" not in args and "following" not in args) or item['last_watched_media_playhead'] > 0:
             air = media['available_time']
-            seconds = math.ceil((now - air).total_seconds())
-            duration = media['duration']
-            if not duration:
+            if duration = 0 or air >= now:
                 following_title(air)
-                print((color.YELLOW+'{} - E{} - {}'+color.END).format(media['collection_name'], media['episode_number'], mmss(-seconds)))
+                print((color.YELLOW+'{} - E{} - {}'+color.END).format(media['collection_name'], media['episode_number'], air.strftime("%b %d %H:%M")))
                 count += 1
             else:
-                seen = item['most_likely_media_playhead'] >= duration * QUEUE_WATCHED_THRESHOLD
+                seen = item['most_likely_media_playhead'] >= media['duration'] * QUEUE_WATCHED_THRESHOLD
                 if "all" in args or not seen:
-                    days = seconds/60/60/24
+                    days = math.ceil((now - air).total_seconds())/60/60/24
                     if "following" not in args or days < QUEUE_FOLLOWING_THRESHOLD:
                         following_title(air)
                         if seen:
