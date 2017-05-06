@@ -659,7 +659,7 @@ def show_queue(args = []):
         media = item['most_likely_media']
         if ("watching" not in args and "following" not in args) or item['last_watched_media_playhead'] > 0:
             air = media['available_time']
-            if duration = 0 or air >= now:
+            if not media['duration'] or air >= now:
                 following_title(air)
                 print((color.YELLOW+'{} - E{} - {}'+color.END).format(media['collection_name'], media['episode_number'], air.strftime("%b %d %H:%M")))
                 count += 1
