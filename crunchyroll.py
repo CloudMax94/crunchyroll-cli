@@ -12,13 +12,16 @@ import random
 import re
 import signal
 import string
+import subprocess
 import time
+import zlib
+from shlex import quote
+from sys import argv, exit
 
 import requests
 from Crypto.Cipher import AES
 from bs4 import BeautifulSoup
 from dateutil import tz
-from sys import argv, exit, stdout
 
 # Where should the cache file be stored?
 # This file is used to store generated device id, session id, username and password
@@ -41,7 +44,7 @@ AUTO_PLAYHEAD = 0
 # Should playhead be updated without asking after watching media?
 AUTO_PLAYHEAD_END = False
 # How many seconds should the queue be cached before expiring
-QUEUE_CACHE_EXPIRES = 60*60
+QUEUE_CACHE_EXPIRES = 60 * 60
 
 # END OF CONFIGURATION
 
@@ -51,7 +54,7 @@ USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:51.0) Gecko/20100101 Firefox/51
 
 queue = []
 ram_cache = None
-last_watched_timestamp = None # Only used to transfer timestamp from authenticate to load_queue...
+last_watched_timestamp = None  # Only used to transfer timestamp from authenticate to load_queue...
 
 
 class Color:
@@ -115,9 +118,12 @@ def mmss(seconds):
 
 
 def timestamp_to_datetime(ts):
-    return (datetime.datetime.strptime(ts[:-6],'%Y-%m-%dT%H:%M:%S') + datetime.timedelta(hours=int(ts[-5:-3]), minutes=int(ts[-2:])) * -int(ts[-6:-5]+'1')).replace(tzinfo=tz.tzutc()).astimezone(tz.tzlocal())
+    part1 = datetime.datetime.strptime(ts[:-6], '%Y-%m-%dT%H:%M:%S')
+    part2 = datetime.timedelta(hours=int(ts[-5:-3]), minutes=int(ts[-2:])) * -int(ts[-6:-5] + '1')
+    return (part1 + part2).replace(tzinfo=tz.tzutc()).astimezone(tz.tzlocal())
 
-#TODO: Handle re-authentication when session has expired directly in the API calls
+
+# TODO: Handle re-authentication when session has expired directly in the API calls
 def call_api(name, params, secure=False):
     protocol = "http"
     if secure:
@@ -150,9 +156,9 @@ def generate_key(mediaid):
     # Below: Do some black magic
     eq1 = int(int(math.floor(math.sqrt(6.9) * math.pow(2, 25))) ^ mediaid)
     eq2 = int(math.floor(math.sqrt(6.9) * math.pow(2, 25)))
-    eq3 = (mediaid ^ eq2) ^ (mediaid ^ eq2) >> 3 ^ eq1 * 32
-    # Below: Creates a 160-bit SHA1 hash
-    sha_hash = hashlib.sha1(create_string() + str(eq3)).digest() + '\x00' * 12
+    eq3 = str((mediaid ^ eq2) ^ (mediaid ^ eq2) >> 3 ^ eq1 * 32).encode('utf-8')
+    # Below: Creates a 160-bit SHA1 hash padded to 256-bit using zeroes
+    sha_hash = hashlib.sha1(create_string() + eq3).digest() + b'\x00' * 12
     return sha_hash
 
 
@@ -163,7 +169,7 @@ def create_string():
     final_string = ''
     for arg in arg_array[2:]:
         final_string += chr(arg % 97 + 33)
-    return final_string
+    return final_string.encode('utf-8')
 
 
 def decode_subtitles(subid, iv, data):
@@ -236,7 +242,7 @@ def set_cache(arg1, value=None):
         cache[arg1] = value
     else:
         cache = arg1
-    #We use atomic saving in case of a screw up that would remove all user data
+    # We use atomic saving in case of a screw up that would remove all user data
     tmp = os.path.dirname(CACHE_PATH) + '/~' + os.path.basename(CACHE_PATH)
     with open(tmp, 'w') as f:
         try:
@@ -315,17 +321,19 @@ def authenticate_session(user, password, sess_id):
 
 
 def finish_auth(sess_id, auth, expires):
-    set_cache("auth", auth);
-    set_cache("expires", timestamp_to_datetime(expires).timestamp());
-    set_cache("session_id", sess_id);
+    set_cache("auth", auth)
+    set_cache("expires", timestamp_to_datetime(expires).timestamp())
+    set_cache("session_id", sess_id)
     print_overridable(Color.GREEN + 'You are now authenticated' + Color.END, True)
 
-#TODO: Currently the session is dropped entirely if the authentication fails. We want to cache and re-use it on the next attempt!
+
+# TODO: Currently the session is dropped entirely if the authentication fails. We want to cache and re-use it on the next attempt!
 def authenticate(args):
     global last_watched_timestamp
-    sess_id = get_cache("session_id");
+    sess_id = get_cache("session_id")
     if sess_id and "new" not in args:
-        # This call is used to determine if session is valid, as well as obtaining timestamp to determine if queue is outdated!
+        # This call is used to determine if session is valid, as well as obtaining timestamp to determine if queue is
+        # outdated!
         resp = call_api('recently_watched', {
             'media_types': 'anime|drama',
             'offset': 0,
@@ -393,14 +401,17 @@ def update_notifications():
                 del notifications[series_id]
     set_cache('notifications', notifications)
 
+
 def save_queue():
     global queue
-    saveQueue = copy.deepcopy(queue)
-    for index, item in enumerate(saveQueue):
-        for media in ['most_likely_media']: # , 'last_watched_media'
-            saveQueue[index][media]['available_time'] = saveQueue[index][media]['available_time'].replace(tzinfo=tz.tzutc()).timestamp() #We save the queue as an UTC integer
-    set_cache('queue', saveQueue)
+    savequeue = copy.deepcopy(queue)
+    for index, item in enumerate(savequeue):
+        for media in ['most_likely_media']:  # , 'last_watched_media'
+            savequeue[index][media]['available_time'] = savequeue[index][media]['available_time'].replace(
+                tzinfo=tz.tzutc()).timestamp()  # We save the queue as an UTC integer
+    set_cache('queue', savequeue)
     set_cache('queue_timestamp', int(time.time()))
+
 
 # TODO: Force expire the cache when you're past the air time of a show you're following (Maybe this should apply whenever queue is retrieved?)
 def load_queue():
@@ -408,33 +419,33 @@ def load_queue():
     if not get_cache("session_id"):
         return
     print_overridable('Checking cache for queue...')
-    queueTimestamp = get_cache('queue_timestamp')
-    cachedQueue = get_cache('queue')
-    if not cachedQueue or not queueTimestamp:
+    queue_timestamp = get_cache('queue_timestamp')
+    cached_queue = get_cache('queue')
+    if not cached_queue or not queue_timestamp:
         print_overridable('No queue cached', True)
         return False
-    if time.time() > queueTimestamp + QUEUE_CACHE_EXPIRES: # Queue automatically expries after a set amount of time
-        seconds = int(time.time() - queueTimestamp)
-        if seconds >= 60*2: # >= Two minutes
-            if seconds >= 60*60*2: # >= Two hours
-                if seconds >= 60*60*24*2: # >= Two days
-                    text = str(int(seconds/60/60/24))+" days"
+    if time.time() > queue_timestamp + QUEUE_CACHE_EXPIRES:  # Queue automatically expires after a set amount of time
+        seconds = int(time.time() - queue_timestamp)
+        if seconds >= 60 * 2:  # >= Two minutes
+            if seconds >= 60 * 60 * 2:  # >= Two hours
+                if seconds >= 60 * 60 * 24 * 2:  # >= Two days
+                    text = str(int(seconds / 60 / 60 / 24)) + " days"
                 else:
-                    text = str(int(seconds/60/60))+" hours"
+                    text = str(int(seconds / 60 / 60)) + " hours"
             else:
-                text = str(int(seconds/60))+" minutes"
+                text = str(int(seconds / 60)) + " minutes"
         else:
-            text = str(seconds)+" seconds"
+            text = str(seconds) + " seconds"
         queue = []
         unset_cache('queue')
         unset_cache('queue_timestamp')
         print_overridable('Cached queue is {} old and has expired'.format(text), True)
         return False
-    else: # If queue hasn't expired, we compare the latest recently_watched entry to see if the queue is outdated
+    else:  # If queue hasn't expired, we compare the latest recently_watched entry to see if the queue is outdated
         print_overridable('Checking if cache is outdated...')
-        if last_watched_timestamp: # The recently_watched call used for authentication suceeded, use the response from that
+        if last_watched_timestamp:  # The recently_watched call used for authentication succeeded, use the response from that
             timestamp = last_watched_timestamp
-        else: # otherwise we'll just make another call to it now that we're authenticated
+        else:  # otherwise we'll just make another call to it now that we're authenticated
             resp = call_api('recently_watched', {
                 'media_types': 'anime|drama',
                 'offset': 0,
@@ -447,25 +458,29 @@ def load_queue():
                     unset_cache("session_id")
                 else:
                     msg = "{} ({})".format(resp['message'], resp['code'])
-                print_overridable(Color.RED + 'Error: Could not determine if queue is outdated. ' + msg + Color.END, True)
+                print_overridable(Color.RED + 'Error: Could not determine if queue is outdated. ' + msg + Color.END,
+                                  True)
                 return False
             else:
                 timestamp = resp['data'][0]['timestamp']
         # NOTE: Crunchyroll returns a UTC timestamp even though it says -07:00 on it, so we ignore the timezone part
-        timestamp = (datetime.datetime.strptime(timestamp[:-6],'%Y-%m-%dT%H:%M:%S')).replace(tzinfo=tz.tzutc()).astimezone(tz.tzlocal())
+        timestamp = (datetime.datetime.strptime(timestamp[:-6], '%Y-%m-%dT%H:%M:%S')).replace(
+            tzinfo=tz.tzutc()).astimezone(tz.tzlocal())
         timestamp = int(time.mktime(timestamp.timetuple()))
         print_overridable('', True)
-        if timestamp > queueTimestamp:
+        if timestamp > queue_timestamp:
             unset_cache('queue')
             unset_cache('queue_timestamp')
             print_overridable('Cached queue was outdated and has been purged', True)
             return False
-    print_overridable(Color.GREEN+'Queue loaded'+Color.END, True)
-    for index, item in enumerate(cachedQueue):
-        for media in ['most_likely_media']: # , 'last_watched_media'
-            cachedQueue[index][media]['available_time'] = datetime.datetime.fromtimestamp(cachedQueue[index][media]['available_time']).replace(tzinfo=tz.tzlocal())
-    queue = cachedQueue
+    print_overridable(Color.GREEN + 'Queue loaded' + Color.END, True)
+    for index, item in enumerate(cached_queue):
+        for media in ['most_likely_media']:  # , 'last_watched_media'
+            cached_queue[index][media]['available_time'] = datetime.datetime.fromtimestamp(
+                cached_queue[index][media]['available_time']).replace(tzinfo=tz.tzlocal())
+    queue = cached_queue
     return True
+
 
 def update_queue():
     global queue
@@ -941,9 +956,10 @@ def main_loop(args=None):
         args = input('> ').split()
 
 
-def exit_signal_handler(signal = None, frame = None):
+def exit_signal_handler():
     print('')
     exit()
+
 
 signal.signal(signal.SIGINT, exit_signal_handler)  # Remove traceback when exiting with ctrl+c
 signal.signal(signal.SIGTSTP, exit_signal_handler)  # Remove stdout stuff when exiting with ctrl+z
