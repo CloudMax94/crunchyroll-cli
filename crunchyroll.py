@@ -30,6 +30,8 @@ CACHE_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.crcache'
 SUBTITLE_TEMP_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.ass'
 # Where should the temporary RTMP info file be stored? (used to extract info from stderr)
 RTMP_INFO_TEMP_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.rtmpinfo'
+# Where downloads are saved. Available variables: collection, media_name, episode
+DOWNLOAD_PATH = os.path.dirname(os.path.realpath(__file__)) + '/downloads/{collection}/{collection} - e{episode:02d}'
 
 # How many days must pass before the show isn't considered followed
 QUEUE_FOLLOWING_THRESHOLD = 14
@@ -764,6 +766,224 @@ def run_media(pageurl, playhead=0):
             break
 
 
+def safe_filename(filename):
+    keepcharacters = (' ','.','_')
+    return "".join(c for c in filename if c.isalnum() or c in keepcharacters).rstrip()
+
+
+def download_media(pageurl):
+    mediaid = re.search(r'[^\d](\d{6})(?:[^\d]|$)', pageurl).group(1)
+
+    data = {
+        'media_id': mediaid,
+        'video_format': '108',
+        'video_quality': '80',
+        'current_page': pageurl
+    }
+
+    print_overridable('Fetching media information...')
+    config = call_rpc('RpcApiVideoPlayer_GetStandardConfig', data)
+    print_overridable()
+    if config.status_code != 200:
+        print(Color.RED + 'Error: ' + config.text + Color.END)
+        return
+
+    # What is this even? Does it catch some specific media or 404 pages?
+    if len(config.text) < 100:
+        print(config.url)
+        print(config.text)
+        return
+
+    config = BeautifulSoup(config.text, 'lxml-xml')
+
+    # Check for errors
+    error = config.find('error')
+    if error:
+        print(Color.RED + 'Error: ' + error.msg.text + Color.END)
+        return
+
+    # Check if media is unavailable
+    error = config.find('upsell')
+    if error:
+        print(Color.RED + 'Error: Media is only available for premium members' + Color.END)
+        return
+
+    collection_name = config.series_title.text
+    print(Color.BOLD + collection_name + Color.END)
+    media_name = config.episode_title.text
+    episode = config.episode_number.text
+    if episode:
+        print(Color.BOLD + 'Episode:    ' + Color.END + episode)
+    if media_name:
+        print(Color.BOLD + 'Title:      ' + Color.END + media_name)
+    duration = config.duration.text
+
+    basepath = DOWNLOAD_PATH.format(collection=safe_filename(collection_name),
+                                    media_name=safe_filename(media_name),
+                                    episode=int(episode)
+                                    )
+    filename = basepath + '.mp4'
+    subname = basepath + '.eng.ass'
+    print(Color.BOLD + 'File:       ' + Color.END + '{}'.format(filename))
+    sub = config.find('subtitle', attrs={'link': None})
+    if sub:
+        print_overridable('Downloading subtitles...')
+        _id = int(sub['id'])
+        _iv = sub.iv.text
+        _subdata = sub.data.text
+        if not os.path.exists(os.path.dirname(subname)):
+            try:
+                os.makedirs(os.path.dirname(subname))
+            except OSError as exc: # Guard against race condition
+                if exc.errno != errno.EEXIST:
+                    raise
+        open(subname, 'w').write(convert(decode_subtitles(_id, _iv, _subdata).decode('utf-8')))
+
+    print_overridable('Fetching stream information...')
+
+    streamconfig = BeautifulSoup(call_rpc('RpcApiVideoEncode_GetStreamInfo', data).text, 'lxml-xml')
+    streamconfig.encoding = 'utf-8'
+
+    print_overridable('Starting download...')
+
+    subarg = []
+    if sub:
+        subarg = ['--sub-file', quote(SUBTITLE_TEMP_PATH)]
+
+    host = streamconfig.host.text
+    file = streamconfig.file.text
+    if re.search('fplive\.net', host):
+        url1, = re.findall('.+/c\d+', host)
+        url2, = re.findall('c\d+\?.+', host)
+    else:
+        url1, = re.findall('.+/ondemand/', host)
+        url2, = re.findall('ondemand/.+', host)
+
+    proccommand = ['rtmpdump',
+                   '-r', url1,
+                   '-a', url2,
+                   '-f', 'WIN 11,8,800,50',
+                   '-m', '15',
+                   '-W', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf',
+                   '-p', pageurl,
+                   '-y', file,
+                   '-o', filename]
+    rtmpinfo = open(RTMP_INFO_TEMP_PATH, 'w+')
+    proc = subprocess.Popen(proccommand,
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL,
+                            stderr=rtmpinfo
+                            )
+
+    while True:
+        rtmpinfo.seek(0)
+        for line in reversed(rtmpinfo.readlines()):
+            if line.rstrip() == '':
+                continue
+            r = re.search('([\d.]+) kB / ([\d.]+) sec', line)
+            if r:
+                print_overridable((Color.BOLD + 'Downloaded:' + Color.END + ' {}/{}').format(mmss(float(r.group(2))), mmss(duration)))
+                break
+        rtmpinfo.seek(0)
+        rtmpinfo.truncate()
+        if proc.poll() is not None:
+            break
+
+    print_under()
+    rtmpinfo.close()
+    os.remove(RTMP_INFO_TEMP_PATH)
+
+    print(Color.GREEN + 'Episode downloaded' + Color.END)
+
+
+def download_series(series_id):
+    resp = call_api('list_collections', {
+        'series_id': series_id
+    })
+    if resp['error']:
+        print(Color.RED + 'Error: Could not retrieve collections' + Color.END)
+        return
+    print(Color.BOLD + 'Collections:' + Color.END)
+    for i, collection in enumerate(resp['data']):
+        print((Color.BOLD + '{}:' + Color.END + ' {}').format(i+1, collection['name']))
+    index = input('Which collection do you want to download (Specify a number)? ')
+    if not index.isdigit():
+        return # Did not specify a digit
+    index = int(index) - 1
+    if index >= len(resp['data']):
+        return # Invalid number
+    collection = resp['data'][index]
+    resp = call_api('list_media', {
+        'collection_id': collection['collection_id'],
+        'fields': 'media.url,media.collection_name,media.name,media.episode_number',
+        'limit': 9999
+    })
+    if resp['error']:
+        print(Color.RED + 'Error: Could not retrieve media' + Color.END)
+        return
+    for media in resp['data']:
+        basepath = DOWNLOAD_PATH.format(collection=safe_filename(media['collection_name']),
+                                        media_name=safe_filename(media['name']),
+                                        episode=int(media['episode_number'])
+                                        )
+        if os.path.isfile(basepath + '.mp4'):
+            print('"' + basepath + '.mp4" already exists, skipping')
+            continue
+        download_media(media['url'])
+
+
+def run_download(search):
+    result = re.search('^https?:\/\/(?:www\.)?crunchyroll\.com\/', search)
+    if result:
+        # Check if it is a media URL
+        result = re.search('^https?:\/\/(?:www\.)?crunchyroll\.com\/[^\/]+\/.*-[0-9]+\/?(\?|#|$)', search)
+        if result:
+            download_media(search)
+            return
+        # Check if it could be a series URL
+        result = re.search('^https?:\/\/(?:www\.)?crunchyroll\.com\/[^\/]+\/?(\?|#|$)', search)
+        if result:
+            headers = {
+                'Host': RPC_API_HOST,
+                'User-Agent': USER_AGENT
+            }
+            print_overridable('Scraping page...')
+            # Load page and look for div.show-actions[group_id] to obtain the series ID
+            resp = requests.get(search, headers=headers, cookies={'sess_id': get_cache("session_id")})
+            resp.encoding = 'utf-8'
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            div = soup.find('div', class_='show-actions', attrs={'group_id': True})
+            print_overridable()
+            if div:
+                download_series(div['group_id'])
+                return
+        # Catch remaining URLs
+        print(Color.RED + 'Error: The specified URL was not for a series or media page' + Color.END)
+        return
+
+    if search is "":
+        print(Color.RED + 'Error: Empty search query' + Color.END)
+        return
+
+    if not queue:
+        update_queue()
+        if not queue:
+            return
+
+    search = search.lower()
+    series = None
+    for item in queue:
+        if search in item['series']['name'].lower():
+            series = item['series']
+            break
+    if not series:
+        print(Color.RED + 'Could not find any series' + Color.END)
+        return
+    if not input_yes('Found series \"{}\"\nDo you want to download it'.format(series['name'])):
+        return
+    download_series(series['series_id'])
+
+
 def format_media_display(media):
     s = media['collection_name']
     ep = media['episode_number']
@@ -896,6 +1116,10 @@ def show_help():
         '         "update" will fetch the queue.\n' +
         Color.BOLD + '       watch' + Color.END + ' <search query>\n' +
         '         Search for a show in your queue and watch the episode you\'re currently on.\n' +
+        Color.BOLD + '       download' + Color.END + ' [<series url>|<media url>|<search query>]\n' +
+        '         Download an entire collection of a series by providing the series page URL.\n' +
+        '         You can also specify the URL of media directly to download only that one.\n' +
+        '         By providing a search query instead of a URL you can search for a series to download in your queue.\n' +
         Color.BOLD + '       prev' + Color.END + ' [resume|<start>]\n' +
         '         Watch the last media that was seen in the CLI.\n' +
         '         "resume" will continue the episode where it left off.\n' +
@@ -915,6 +1139,8 @@ def main_loop(args=None):
             command = args[0].lower()
             if command == 'watch' or command == 'w':
                 run_search(' '.join(args[1:]))
+            elif command == 'download' or command == 'd':
+                run_download(' '.join(args[1:]))
             elif command == 'queue' or command == 'q':
                 show_queue(args[1:])
             elif command == 'auth' or command == 'a':
@@ -956,8 +1182,8 @@ def main_loop(args=None):
         args = input('> ').split()
 
 
-def exit_signal_handler():
-    print('')
+def exit_signal_handler(signum = None, frame = None):
+    print()
     exit()
 
 
