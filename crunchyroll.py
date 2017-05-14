@@ -1,36 +1,32 @@
 #!/usr/bin/python3
-import array
 import base64
+import concurrent.futures
+import copy
 import datetime
+import getpass
 import hashlib
+import json
 import math
 import os
 import random
 import re
-import requests
-import subprocess
-import zlib
 import signal
-import time
 import string
-import getpass
-import json
-import concurrent.futures
-import copy
+import time
 
-from dateutil import tz
+import requests
 from Crypto.Cipher import AES
 from bs4 import BeautifulSoup
-from shlex import quote
+from dateutil import tz
 from sys import argv, exit, stdout
 
 # Where should the cache file be stored?
 # This file is used to store generated device id, session id, username and password
-CACHE_PATH = os.path.dirname(os.path.realpath(__file__))+'/.crcache'
+CACHE_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.crcache'
 # Where should the subtitle file be stored?
-SUBTITLE_TEMP_PATH = os.path.dirname(os.path.realpath(__file__))+'/.ass'
+SUBTITLE_TEMP_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.ass'
 # Where should the temporary RTMP info file be stored? (used to extract info from stderr)
-RTMP_INFO_TEMP_PATH = os.path.dirname(os.path.realpath(__file__))+'/.rtmpinfo'
+RTMP_INFO_TEMP_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.rtmpinfo'
 
 # How many days must pass before the show isn't considered followed
 QUEUE_FOLLOWING_THRESHOLD = 14
@@ -53,55 +49,63 @@ API_HOST = 'api.crunchyroll.com'
 RPC_API_HOST = 'www.crunchyroll.com'
 USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64; rv:51.0) Gecko/20100101 Firefox/51.0'
 
-queue = None
+queue = []
 ram_cache = None
 last_watched_timestamp = None # Only used to transfer timestamp from authenticate to load_queue...
 
-class color:
-   PURPLE = '\033[95m'
-   CYAN = '\033[96m'
-   DARKCYAN = '\033[36m'
-   BLUE = '\033[94m'
-   GREEN = '\033[92m'
-   YELLOW = '\033[93m'
-   RED = '\033[91m'
-   BOLD = '\033[1m'
-   UNDERLINE = '\033[4m'
-   END = '\033[0m'
+
+class Color:
+    PURPLE = '\033[95m'
+    CYAN = '\033[96m'
+    DARKCYAN = '\033[36m'
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+
 
 colors = {}
-for i in dir(color):
-    if not i.startswith("__"): colors[i] = getattr(color, i)
+for i in dir(Color):
+    if not i.startswith("__"):
+        colors[i] = getattr(Color, i)
 
 print_overridable_len = 0
-#If string is empty, it ends override by cleaning up the current line
-def print_overridable(str = '', end = False):
+
+
+# If string is empty, it ends override by cleaning up the current line
+def print_overridable(pstring='', end=False):
     global print_overridable_len
     old_len = print_overridable_len
-    cleanstr = str
-    for i,v in colors.items():
+    cleanstr = pstring
+    for e, v in colors.items():
         cleanstr = cleanstr.replace(v, '')
     print_overridable_len = len(cleanstr)
     if old_len > print_overridable_len:
-        str += ' '*(old_len-print_overridable_len)
+        pstring += ' ' * (old_len - print_overridable_len)
     if end:
         print_overridable_len = 0
-        print(str)
+        print(pstring)
     else:
-        print(str, end="\r", flush=True)
+        print(pstring, end="\r", flush=True)
 
-#End override by placing text on a new line
-def print_under(str = ''):
+
+# End override by placing text on a new line
+def print_under(pstring=''):
     global print_overridable_len
-    if len(str):
-        print('\n'+str)
+    if len(pstring):
+        print('\n' + pstring)
     else:
         print('')
     print_overridable_len = 0
 
+
 def input_yes(question):
-    answer = input(question+' (Y/N)? ')
+    answer = input(question + ' (Y/N)? ')
     return answer.lower() == 'y'
+
 
 def mmss(seconds):
     stamp = str(datetime.timedelta(seconds=int(float(seconds))))
@@ -109,13 +113,15 @@ def mmss(seconds):
         stamp = stamp[2:]
     return stamp
 
+
 def timestamp_to_datetime(ts):
     return (datetime.datetime.strptime(ts[:-6],'%Y-%m-%dT%H:%M:%S') + datetime.timedelta(hours=int(ts[-5:-3]), minutes=int(ts[-2:])) * -int(ts[-6:-5]+'1')).replace(tzinfo=tz.tzutc()).astimezone(tz.tzlocal())
 
 #TODO: Handle re-authentication when session has expired directly in the API calls
-def call_api(name, params, secure = False):
+def call_api(name, params, secure=False):
     protocol = "http"
-    if secure: protocol += "s"
+    if secure:
+        protocol += "s"
     headers = {
         'Host': API_HOST,
         'User-Agent': USER_AGENT
@@ -127,65 +133,53 @@ def call_api(name, params, secure = False):
     resp.encoding = 'utf-8'
     return resp.json()
 
+
 def call_rpc(name, params):
     headers = {
         'Host': RPC_API_HOST,
         'User-Agent': USER_AGENT
     }
     params['req'] = name
-    resp = requests.get('http://{}/xml/'.format(RPC_API_HOST), headers=headers, params=params, cookies={'sess_id': get_cache("session_id")})
+    resp = requests.get('http://{}/xml/'.format(RPC_API_HOST), headers=headers, params=params,
+                        cookies={'sess_id': get_cache("session_id")})
     resp.encoding = 'utf-8'
     return resp
 
-def generate_key(mediaid, size=32):
+
+def generate_key(mediaid):
     # Below: Do some black magic
     eq1 = int(int(math.floor(math.sqrt(6.9) * math.pow(2, 25))) ^ mediaid)
     eq2 = int(math.floor(math.sqrt(6.9) * math.pow(2, 25)))
     eq3 = (mediaid ^ eq2) ^ (mediaid ^ eq2) >> 3 ^ eq1 * 32
     # Below: Creates a 160-bit SHA1 hash
-    shaHash = hashlib.sha1()
-    stringHash = create_string([20, 97, 1, 2]) + str(eq3)
-    shaHash.update(stringHash.encode(encoding='UTF-8'))
-    finalHash = shaHash.digest()
-    hashArray = array.array('B', finalHash)
-    # Below: Pads the 160-bit hash to 256-bit using zeroes, incase a 256-bit key is requested
-    padding = [0]*4*3
-    hashArray.extend(padding)
-    keyArray = [0]*size
-    # Below: Create a string of the requested key size
-    for i, item in enumerate(hashArray[:size]):
-        keyArray[i] = item
-    return hashArray.tostring()
+    sha_hash = hashlib.sha1(create_string() + str(eq3)).digest() + '\x00' * 12
+    return sha_hash
 
-def create_string(args):
-    i = 0
-    argArray = [args[2], args[3]]
-    while(i < args[0]):
-        argArray.append(argArray[-1] + argArray[-2])
-        i = i + 1
-    finalString = ""
-    for arg in argArray[2:]:
-        finalString += chr(arg % args[1] + 33)
-    return finalString
 
-def decode_subtitles(id, iv, data):
-    compressed = True
-    key = generate_key(id)
+def create_string():
+    arg_array = [1, 2]
+    for fib in range(20):
+        arg_array.append(arg_array[-1] + arg_array[-2])
+    final_string = ''
+    for arg in arg_array[2:]:
+        final_string += chr(arg % 97 + 33)
+    return final_string
+
+
+def decode_subtitles(subid, iv, data):
+    key = generate_key(subid)
     iv = base64.b64decode(iv)
     data = base64.b64decode(data)
     cipher = AES.new(key, AES.MODE_CBC, iv)
-    decryptedData = cipher.decrypt(data)
+    decrypteddata = cipher.decrypt(data)
+    return zlib.decompress(decrypteddata)
 
-    if compressed:
-        return zlib.decompress(decryptedData)
-    else:
-        return decryptedData
 
 def convert(script):
     soup = BeautifulSoup(script, 'xml')
     header = soup.find('subtitle_script')
-    header = "[Script Info]\nTitle: "+header['title']+"\nScriptType: v4.00+\nWrapStyle: "+header['wrap_style']\
-             + "\nPlayResX: "+header['play_res_x']+"\nPlayResY: "+header['play_res_y']+"\n\n"
+    header = "[Script Info]\nTitle: " + header['title'] + "\nScriptType: v4.00+\nWrapStyle: " + header['wrap_style'] \
+             + "\nPlayResX: " + header['play_res_x'] + "\nPlayResY: " + header['play_res_y'] + "\n\n"
     styles = "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, " \
              "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, " \
              "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
@@ -196,45 +190,48 @@ def convert(script):
     for style in stylelist:
         if style['scale_x'] or style['scale_y'] == '0':
             style['scale_x'], style['scale_y'] = '100', '100'  # Fix for Naruto 1-8 where it's set to 0 but ignored
-        styles += "Style: " + style['name'] + "," + style['font_name'] + "," + style['font_size'] + ","\
-                  + style['primary_colour'] + "," + style['secondary_colour'] + "," + style['outline_colour'] + ","\
-                  + style['back_colour'] + "," + style['bold'] + "," + style['italic'] + ","\
-                  + style['underline'] + "," + style['strikeout'] + "," + style['scale_x'] + ","\
-                  + style['scale_y'] + "," + style['spacing'] + "," + style['angle'] + ","\
-                  + style['border_style'] + "," + style['outline'] + "," + style['shadow'] + ","\
-                  + style['alignment'] + "," + style['margin_l'] + "," + style['margin_r'] + ","\
+        styles += "Style: " + style['name'] + "," + style['font_name'] + "," + style['font_size'] + "," \
+                  + style['primary_colour'] + "," + style['secondary_colour'] + "," + style['outline_colour'] + "," \
+                  + style['back_colour'] + "," + style['bold'] + "," + style['italic'] + "," \
+                  + style['underline'] + "," + style['strikeout'] + "," + style['scale_x'] + "," \
+                  + style['scale_y'] + "," + style['spacing'] + "," + style['angle'] + "," \
+                  + style['border_style'] + "," + style['outline'] + "," + style['shadow'] + "," \
+                  + style['alignment'] + "," + style['margin_l'] + "," + style['margin_r'] + "," \
                   + style['margin_v'] + "," + style['encoding'] + "\n"
 
     for event in eventlist:
-        events += "Dialogue: 0,"+event['start']+","+event['end']+","+event['style']+","\
-                  + event['name']+","+event['margin_l']+","+event['margin_r']+","+event['margin_v']\
-                  + ","+event['effect']+","+event['text']+"\n"
+        events += "Dialogue: 0," + event['start'] + "," + event['end'] + "," + event['style'] + "," \
+                  + event['name'] + "," + event['margin_l'] + "," + event['margin_r'] + "," + event['margin_v'] \
+                  + "," + event['effect'] + "," + event['text'] + "\n"
 
-    formattedsubs = header+styles+events
+    formattedsubs = header + styles + events
     return formattedsubs
 
-def get_cache(key = None):
+
+def get_cache(key=None):
     def _get_cache():
         global ram_cache
         if ram_cache:
             return ram_cache
         if os.path.isfile(CACHE_PATH):
             with open(CACHE_PATH, 'r') as file:
-                cache = file.read()
-                if cache != "":
-                    cache = json.loads(cache)
-                    return cache
+                fcache = file.read()
+                if fcache != "":
+                    fcache = json.loads(fcache)
+                    return fcache
         return {}
+
     cache = _get_cache()
-    if key != None:
+    if key is not None:
         if key in cache:
             return cache[key]
         return None
     return cache
 
-def set_cache(arg1, value = None):
+
+def set_cache(arg1, value=None):
     global ram_cache
-    if value != None:
+    if value is not None:
         cache = get_cache()
         cache[arg1] = value
     else:
@@ -249,9 +246,10 @@ def set_cache(arg1, value = None):
             f.close()
             os.rename(tmp, CACHE_PATH)
         except TypeError:  # includes simplejson.decoder.JSONDecodeError
-            print(color.RED+'Could not save cache, error encoding JSON'+color.END)
+            print(Color.RED + 'Could not save cache, error encoding JSON' + Color.END)
             f.close()
             os.remove(tmp)
+
 
 def unset_cache(*keys):
     cache = get_cache()
@@ -260,14 +258,17 @@ def unset_cache(*keys):
             del cache[key]
     set_cache(cache)
 
+
 def get_device_id():
     device_id = get_cache("device_id")
-    if device_id != None: return device_id
+    if device_id is not None:
+        return device_id
     # Create a random device id and cache it
     char_set = string.ascii_letters + string.digits
     device_id = "".join(random.sample(char_set, 32))
-    set_cache("device_id", device_id);
+    set_cache("device_id", device_id)
     return device_id
+
 
 def create_session():
     data = {
@@ -279,24 +280,25 @@ def create_session():
     auth = get_cache("auth")
     if expires and expires < time.time():
         unset_cache("expires", "auth")
-        print_overridable(color.RED+'Authentication has expired, must reauthenticate'+color.END, True)
+        print_overridable(Color.RED + 'Authentication has expired, must reauthenticate' + Color.END, True)
     elif auth:
         data["auth"] = auth
 
     print_overridable('Creating session...')
-    unset_cache('session_id') # The call will fail if you have an expired session set
+    unset_cache('session_id')  # The call will fail if you have an expired session set
     resp = call_api('start_session', data)
 
     if resp['error']:
-        print_overridable(color.RED+'Error: '+resp['message']+color.END, True)
+        print_overridable(Color.RED + 'Error: ' + resp['message'] + Color.END, True)
         return None
     else:
-        print_overridable(color.GREEN+'Session created'+color.END, True)
+        print_overridable(Color.GREEN + 'Session created' + Color.END, True)
         sess_id = resp['data']['session_id']
         if resp['data']['auth']:
             finish_auth(sess_id, resp['data']['auth'], resp['data']['expires'])
-            return None #We return None to short-circuit the caller since the session is already authenticated
+            return None  # We return None to short-circuit the caller since the session is already authenticated
         return sess_id
+
 
 def authenticate_session(user, password, sess_id):
     data = {
@@ -307,15 +309,16 @@ def authenticate_session(user, password, sess_id):
     print_overridable('Authenticating...')
     resp = call_api('login', data, True)
     if resp['error']:
-        print_overridable(color.RED+'Error: '+resp['message']+color.END, True)
+        print_overridable(Color.RED + 'Error: ' + resp['message'] + Color.END, True)
     else:
         finish_auth(sess_id, resp['data']['auth'], resp['data']['expires'])
+
 
 def finish_auth(sess_id, auth, expires):
     set_cache("auth", auth);
     set_cache("expires", timestamp_to_datetime(expires).timestamp());
     set_cache("session_id", sess_id);
-    print_overridable(color.GREEN+'You are now authenticated'+color.END, True)
+    print_overridable(Color.GREEN + 'You are now authenticated' + Color.END, True)
 
 #TODO: Currently the session is dropped entirely if the authentication fails. We want to cache and re-use it on the next attempt!
 def authenticate(args):
@@ -331,9 +334,9 @@ def authenticate(args):
         })
         if not resp['error']:
             last_watched_timestamp = resp['data'][0]['timestamp']
-            print(color.GREEN+'You are still authenticated'+color.END)
+            print(Color.GREEN + 'You are still authenticated' + Color.END)
             return
-        print(color.RED+'Session has expired'+color.END)
+        print(Color.RED + 'Session has expired' + Color.END)
         unset_cache('session_id')
 
     sess_id = create_session()
@@ -342,32 +345,32 @@ def authenticate(args):
         if not user:
             user = input('Username: ')
             if input_yes("Remember username"):
-                set_cache("user", user);
-                print(color.GREEN+'Username saved'+color.END)
+                set_cache("user", user)
+                print(Color.GREEN + 'Username saved' + Color.END)
         password = get_cache("password")
         if not password:
             password = getpass.getpass()
             if input_yes("Remember password"):
-                set_cache("password", password);
-                print(color.GREEN+'Password saved'+color.END)
+                set_cache("password", password)
+                print(Color.GREEN + 'Password saved' + Color.END)
         authenticate_session(user, password, sess_id)
+
 
 def update_notifications():
     notifications = get_cache('notifications')
     if not notifications:
         notifications = {}
-    items = list(queue)
     now = datetime.datetime.utcnow().replace(tzinfo=tz.tzutc())
-    for item in items:
+    for item in queue:
         media = item['most_likely_media']
         if item['last_watched_media_playhead'] > 0:
             air = media['available_time']
-            seriesId = item['series']['series_id']
+            series_id = item['series']['series_id']
             if air > now:
-                airSeconds = int(time.mktime(air.timetuple()))
-                if seriesId not in notifications or airSeconds != notifications[seriesId][1]:
-                    if seriesId in notifications: # An outdated notification is set, remove it!
-                        proc = subprocess.Popen(["atrm", notifications[seriesId][0]])
+                air_seconds = int(time.mktime(air.timetuple()))
+                if series_id not in notifications or air_seconds != notifications[series_id][1]:
+                    if series_id in notifications:  # An outdated notification is set, remove it!
+                        subprocess.Popen(["atrm", notifications[series_id][0]])
                     proc = subprocess.Popen(
                         ['at', air.strftime("%H%M %d.%m.%y")],
                         stdin=subprocess.PIPE,
@@ -375,7 +378,7 @@ def update_notifications():
                         stderr=subprocess.PIPE
                     )
                     if media['episode_number']:
-                        episode = ' episode '+media['episode_number']
+                        episode = ' episode ' + media['episode_number']
                     else:
                         episode = ''
                     cmd = "notify-send 'Crunchyroll CLI' '{}{} is now available.'".format(
@@ -383,11 +386,11 @@ def update_notifications():
                         episode
                     )
                     output = proc.communicate(input=cmd.encode())[1]
-                    result = re.search(b'job ([\d]+)', output)
+                    result = re.search(b'job (\d+)', output)
                     if result:
-                        notifications[item['series']['series_id']] = [result.group(1).decode("utf-8"), airSeconds]
-            elif seriesId in notifications:
-                del notifications[seriesId]
+                        notifications[item['series']['series_id']] = [result.group(1).decode("utf-8"), air_seconds]
+            elif series_id in notifications:
+                del notifications[series_id]
     set_cache('notifications', notifications)
 
 def save_queue():
@@ -422,6 +425,7 @@ def load_queue():
                 text = str(int(seconds/60))+" minutes"
         else:
             text = str(seconds)+" seconds"
+        queue = []
         unset_cache('queue')
         unset_cache('queue_timestamp')
         print_overridable('Cached queue is {} old and has expired'.format(text), True)
@@ -443,7 +447,7 @@ def load_queue():
                     unset_cache("session_id")
                 else:
                     msg = "{} ({})".format(resp['message'], resp['code'])
-                print_overridable(color.RED+'Error: Could not determine if queue is outdated. '+msg+color.END, True)
+                print_overridable(Color.RED + 'Error: Could not determine if queue is outdated. ' + msg + Color.END, True)
                 return False
             else:
                 timestamp = resp['data'][0]['timestamp']
@@ -456,7 +460,7 @@ def load_queue():
             unset_cache('queue_timestamp')
             print_overridable('Cached queue was outdated and has been purged', True)
             return False
-    print_overridable(color.GREEN+'Queue loaded'+color.END, True)
+    print_overridable(Color.GREEN+'Queue loaded'+Color.END, True)
     for index, item in enumerate(cachedQueue):
         for media in ['most_likely_media']: # , 'last_watched_media'
             cachedQueue[index][media]['available_time'] = datetime.datetime.fromtimestamp(cachedQueue[index][media]['available_time']).replace(tzinfo=tz.tzlocal())
@@ -467,19 +471,21 @@ def update_queue():
     global queue
     if not get_cache("session_id"):
         if queue:
-            print(color.YELLOW+'Error: Could not update queue. You are not authenticated'+color.END)
+            print(Color.YELLOW + 'Error: Could not update queue. You are not authenticated' + Color.END)
         else:
-            print(color.RED+'Warning: Could not load queue. You are not authenticated'+color.END)
+            print(Color.RED + 'Warning: Could not load queue. You are not authenticated' + Color.END)
         return
 
     if queue:
         print_overridable('Updating queue...')
-        resultStr = 'Queue updated'
+        result_str = 'Queue updated'
     else:
         print_overridable('Loading queue...')
-        resultStr = 'Queue loaded'
+        result_str = 'Queue loaded'
     data = {
-        'fields': 'last_watched_media_playhead,most_likely_media,media.name,media.episode_number,media.available_time,media.duration,media.collection_name,media.url,series,series.name,series.series_id,media.playhead'
+        'fields': 'last_watched_media_playhead,most_likely_media,media.name,media.episode_number,'
+                  'media.available_time,media.duration,media.collection_name,media.url,series,series.name,'
+                  'series.series_id,media.playhead '
     }
 
     resp = call_api('queue', data)
@@ -489,30 +495,36 @@ def update_queue():
             unset_cache("session_id")
         else:
             msg = "{} ({})".format(resp['message'], resp['code'])
-        print_overridable(color.RED+'Error: Could not fetch queue. '+msg+color.END, True)
+        print_overridable(Color.RED + 'Error: Could not fetch queue. ' + msg + Color.END, True)
     else:
         queue = resp['data']
         for index, item in enumerate(queue):
             # Add missing integer values, and convert them from string to int
             for key in ['last_watched_media_playhead']:
                 val = item[key]
-                if not val: val = 0
-                else: val = int(val)
+                if not val:
+                    val = 0
+                else:
+                    val = int(val)
                 queue[index][key] = val
-            for media in ['most_likely_media']: # , 'last_watched_media'
-                if not item[media]: continue
+            for media in ['most_likely_media']:  # , 'last_watched_media'
+                if not item[media]:
+                    continue
                 for key in ['duration', 'playhead']:
                     val = item[media][key]
-                    if not val: val = 0
-                    else: val = int(val)
+                    if not val:
+                        val = 0
+                    else:
+                        val = int(val)
                     queue[index][media][key] = val
                 queue[index][media]['available_time'] = timestamp_to_datetime(queue[index][media]['available_time'])
-        print_overridable(color.GREEN+resultStr+color.END, True)
+        print_overridable(Color.GREEN + result_str + Color.END, True)
         save_queue()
         if NOTIFICATIONS:
             update_notifications()
 
-def run_media(pageurl, playhead = 0):
+
+def run_media(pageurl, playhead=0):
     while True:
         mediaid = re.search(r'[^\d](\d{6})(?:[^\d]|$)', pageurl).group(1)
 
@@ -527,10 +539,10 @@ def run_media(pageurl, playhead = 0):
         config = call_rpc('RpcApiVideoPlayer_GetStandardConfig', data)
         print_overridable()
         if config.status_code != 200:
-            print(color.RED+'Error: '+config.text+color.END)
+            print(Color.RED + 'Error: ' + config.text + Color.END)
             return
 
-        #What is this even? Does it catch some specific media or 404 pages?
+        # What is this even? Does it catch some specific media or 404 pages?
         if len(config.text) < 100:
             print(config.url)
             print(config.text)
@@ -538,28 +550,28 @@ def run_media(pageurl, playhead = 0):
 
         config = BeautifulSoup(config.text, 'lxml-xml')
 
-        #Check for errors
+        # Check for errors
         error = config.find('error')
         if error:
-            print(color.RED+'Error: '+error.msg.text+color.END)
+            print(Color.RED + 'Error: ' + error.msg.text + Color.END)
             return
 
-        #Check if media is unavailable
+        # Check if media is unavailable
         error = config.find('upsell')
         if error:
-            print(color.RED+'Error: Media is only available for premium members'+color.END)
+            print(Color.RED + 'Error: Media is only available for premium members' + Color.END)
             return
 
         collection_name = config.series_title.text
-        print(color.BOLD+collection_name+color.END)
+        print(Color.BOLD + collection_name + Color.END)
         media_name = config.episode_title.text
         episode = config.episode_number.text
         if episode:
-            print(color.BOLD+'Episode:    '+color.END+episode)
+            print(Color.BOLD + 'Episode:    ' + Color.END + episode)
         if media_name:
-            print(color.BOLD+'Title:      '+color.END+media_name)
+            print(Color.BOLD + 'Title:      ' + Color.END + media_name)
         duration = config.duration.text
-        print(color.BOLD+'Duration:   '+color.END+'{}'.format(mmss(duration)))
+        print(Color.BOLD + 'Duration:   ' + Color.END + '{}'.format(mmss(duration)))
 
         sub = config.find('subtitle', attrs={'link': None})
         if sub:
@@ -567,7 +579,6 @@ def run_media(pageurl, playhead = 0):
             _id = int(sub['id'])
             _iv = sub.iv.text
             _subdata = sub.data.text
-            # print(_id, _iv, _subdata)
             open(SUBTITLE_TEMP_PATH, 'w').write(convert(decode_subtitles(_id, _iv, _subdata).decode('utf-8')))
 
         print_overridable('Fetching stream information...')
@@ -604,55 +615,58 @@ def run_media(pageurl, playhead = 0):
                 url2, = re.findall('ondemand/.+', host)
 
             proccommand = ['rtmpdump',
-                '-r', url1,
-                '-a', url2,
-                '-f', 'WIN 11,8,800,50',
-                '-m', '15',
-                '-W', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf',
-                '-p', pageurl,
-                '-y', file,
-                '--start', str(playhead)]
+                           '-r', url1,
+                           '-a', url2,
+                           '-f', 'WIN 11,8,800,50',
+                           '-m', '15',
+                           '-W', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf',
+                           '-p', pageurl,
+                           '-y', file,
+                           '--start', str(playhead)]
             rtmpinfo = open(RTMP_INFO_TEMP_PATH, 'w+')
             rtmpproc = subprocess.Popen(proccommand,
-                stderr=rtmpinfo, # NOTE: There is probably a much better way to obtain stderr without blocking, but I gave up and went with whatever worked
-                stdout=subprocess.PIPE
-            )
+                                        stderr=rtmpinfo,
+                                        # NOTE: There is probably a much better way to obtain stderr without
+                                        # blocking, but I gave up and went with whatever worked
+                                        stdout=subprocess.PIPE
+                                        )
             proc = subprocess.Popen(['mpv', '--force-seekable=yes', '--rebase-start-time=no', '-'] + subarg,
-                stdin=rtmpproc.stdout,
-                stderr=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                bufsize=1
-            )
+                                    stdin=rtmpproc.stdout,
+                                    stderr=subprocess.PIPE,
+                                    stdout=subprocess.DEVNULL,
+                                    bufsize=1
+                                    )
             rtmpproc.stdout.close()  # Allow rtmpproc to receive a SIGPIPE if proc exits.
 
         set_cache('previous_episode', pageurl)
         set_cache('previous_playhead', playhead)
         if playhead:
-            startPosition = mmss(playhead)+'-'
+            start_position = mmss(playhead) + '-'
         else:
-            startPosition = ''
-        downloadPosition = playhead
+            start_position = ''
+        download_position = playhead
         last_update = time.time()
         playhead_update = last_update
         playhead_count = 0
-        def update_playhead(mediaid, playhead):
+
+        def update_playhead(media_id, plyhead):
             nonlocal playhead_count
             resp = call_rpc('RpcApiVideo_VideoView', {
-                'media_id': mediaid,
+                'media_id': media_id,
                 'cbcallcount': playhead_count,
                 'cbelapsed': 30,
-                'playhead': playhead
+                'playhead': plyhead
             })
             if resp.status_code != 200:
-                print_overridable(color.RED+'Error: '+resp.text+color.END, True)
+                print_overridable(Color.RED + 'Error: ' + resp.text + Color.END, True)
                 return False
             else:
                 playhead_count += 1
-                print_overridable((color.GREEN+'Playhead was updated to {}'+color.END).format(mmss(playhead)), True)
+                print_overridable((Color.GREEN + 'Playhead was updated to {}' + Color.END).format(mmss(plyhead)), True)
                 return True
 
-        rtmpMetadata = None
-        rtmpInfoDone = False
+        rtmp_metadata = None
+        rtmp_info_done = False
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             while True:
                 line = proc.stderr.readline().decode("utf-8")
@@ -666,20 +680,23 @@ def run_media(pageurl, playhead = 0):
                             continue
                         r = re.search('([\d.]+) kB / ([\d.]+) sec', line2)
                         if r:
-                            downloadPosition = float(r.group(2))
-                        elif not rtmpInfoDone:
+                            download_position = float(r.group(2))
+                        elif not rtmp_info_done:
                             r = re.search('INFO: ([^ ]+):', line2)
                             if r:
-                                if rtmpMetadata:
-                                    print_overridable(color.BOLD+'Video:      '+color.END+'{}x{} ({})'.format(int(float(rtmpMetadata['width'])), int(float(rtmpMetadata['height'])), rtmpMetadata['videocodecid']), True)
-                                    print(color.BOLD+'Audio:      '+color.END+'{}hz ({})'.format(int(float(rtmpMetadata['audiosamplerate'])), rtmpMetadata['audiocodecid']))
-                                    rtmpInfoDone = True
+                                if rtmp_metadata:
+                                    print_overridable(Color.BOLD + 'Video:      ' + Color.END + '{}x{} ({})'.format(
+                                        int(float(rtmp_metadata['width'])), int(float(rtmp_metadata['height'])),
+                                        rtmp_metadata['videocodecid']), True)
+                                    print(Color.BOLD + 'Audio:      ' + Color.END + '{}hz ({})'.format(
+                                        int(float(rtmp_metadata['audiosamplerate'])), rtmp_metadata['audiocodecid']))
+                                    rtmp_info_done = True
                                 else:
-                                    rtmpMetadata = {}
+                                    rtmp_metadata = {}
                             else:
-                                r = re.search('INFO:   ([^ ]+) +(.+)', line2)
+                                r = re.search('INFO: {3}([^ ]+) +(.+)', line2)
                                 if r:
-                                    rtmpMetadata[r.group(1)] = r.group(2)
+                                    rtmp_metadata[r.group(1)] = r.group(2)
 
                     # Empty the file to prevent taking up unnecessary space
                     rtmpinfo.seek(0)
@@ -687,8 +704,8 @@ def run_media(pageurl, playhead = 0):
 
                 timestamp = re.search('V: (\d{2}:\d{2}:\d{2}) / (\d{2}:\d{2}:\d{2})', line)
                 if timestamp:
-                    current = [int(i) for i in timestamp.group(1).split(":")]
-                    playhead = (current[0]*60+current[1])*60+current[2]
+                    current = [int(t) for t in timestamp.group(1).split(":")]
+                    playhead = (current[0] * 60 + current[1]) * 60 + current[2]
                     now = time.time()
                     if get_cache("session_id") and AUTO_PLAYHEAD and now >= playhead_update + AUTO_PLAYHEAD:
                         playhead_update = now
@@ -700,62 +717,75 @@ def run_media(pageurl, playhead = 0):
                         paused = ' [PAUSED]'
                     else:
                         paused = ''
-                    print_overridable((color.BOLD+'Downloaded:'+color.END+' {}{} '+color.BOLD+'Playhead:'+color.END+' {}{}').format(startPosition, mmss(downloadPosition), mmss(playhead), paused))
+                    print_overridable((
+                                          Color.BOLD + 'Downloaded:' + Color.END + ' {}{} ' + Color.BOLD + 'Playhead:'
+                                          + Color.END + ' {}{}').format(start_position, mmss(download_position),
+                                                                        mmss(playhead), paused))
         print_under()
         set_cache('previous_playhead', playhead)
         if rtmpinfo:
             rtmpinfo.close()
             os.remove(RTMP_INFO_TEMP_PATH)
-        if sub: os.remove(SUBTITLE_TEMP_PATH)
+        if sub:
+            os.remove(SUBTITLE_TEMP_PATH)
 
-        if get_cache("session_id") and (AUTO_PLAYHEAD_END or input_yes('Do you want to update playhead to {}/{}'.format(mmss(playhead), mmss(duration)))):
+        if get_cache("session_id") and (AUTO_PLAYHEAD_END or input_yes(
+                'Do you want to update playhead to {}/{}'.format(mmss(playhead), mmss(duration)))):
             print_overridable('Updating playhead...')
             update_playhead(mediaid, playhead)
 
-        if playhead_count: #if playhead was updated at least once, we need to update the queue
+        if playhead_count:  # if playhead was updated at least once, we need to update the queue
             update_queue()
 
-        nextEpisode = config.find('nextUrl').text
-        if nextEpisode != "":
+        next_episode = config.find('nextUrl').text
+        if next_episode != "":
             if input_yes('Another episode is available, do you want to watch it'):
-                pageurl = nextEpisode
+                pageurl = next_episode
                 playhead = 0
             else:
                 break
         else:
-            print(color.RED+'No more episodes available'+color.END)
+            print(Color.RED + 'No more episodes available' + Color.END)
             break
+
 
 def format_media_display(media):
     s = media['collection_name']
     ep = media['episode_number']
-    if ep: # Some media does not have an episode number
+    if ep:  # Some media does not have an episode number
         s += " – E" + ep
-    if media['name']: # Episode might not have a name set
-        if ep or media['name'] != media['collection_name']: # If no episode numer is set, and both names are equal, it's likely a movie/special
+    if media['name']:  # Episode might not have a name set
+        if ep or media['name'] != media['collection_name']:
+            # If no episode number is set, and both names are equal, it's likely a movie/special
             s += " – " + media['name']
     air = media['available_time']
     now = datetime.datetime.utcnow().replace(tzinfo=tz.tzutc())
-    if air >= now: # Show air time if episode hasn't aired yet
+    if air >= now:  # Show air time if episode hasn't aired yet
         s += " – " + air.strftime("%b %d %H:%M")
     return s
 
-def show_queue(args = []):
-    crntDay = -1
-    def following_title(air):
+
+def show_queue(args=None):
+    if args is None:
+        args = []
+    crnt_day = -1
+
+    def following_title(airtime):
         nonlocal args
-        nonlocal crntDay
+        nonlocal crnt_day
         if "following" in args:
-            weekDay = air.weekday()
-            if weekDay > crntDay:
-                crntDay = weekDay
-                print('\n'+color.BOLD+air.strftime("%A")+color.END)
+            week_day = airtime.weekday()
+            if week_day > crnt_day:
+                crnt_day = week_day
+                print('\n' + Color.BOLD + airtime.strftime("%A") + Color.END)
 
-    if queue is None or "update" in args: update_queue()
-    if queue is None: return
+    if not queue or "update" in args:
+        update_queue()
+        if not queue:
+            return
 
-    items = list(queue)
-    if "following" in args: items.sort(key=lambda e: e['most_likely_media']['available_time'].weekday())
+    if "following" in args:
+        queue.sort(key=lambda e: e['most_likely_media']['available_time'].weekday())
 
     title = "All"
     if "following" in args:
@@ -764,52 +794,54 @@ def show_queue(args = []):
         title = "Watching"
     if "all" not in args:
         title += " (Unseen)"
-    print(color.BOLD+title+':'+color.END)
+    print(Color.BOLD + title + ':' + Color.END)
     now = datetime.datetime.utcnow().replace(tzinfo=tz.tzutc())
     count = 0
-    for item in items:
+    for item in queue:
         media = item['most_likely_media']
         if ("watching" not in args and "following" not in args) or item['last_watched_media_playhead'] > 0:
             air = media['available_time']
             if not media['duration'] or air >= now:
                 following_title(air)
-                print(color.YELLOW+format_media_display(media)+color.END)
+                print(Color.YELLOW + format_media_display(media) + Color.END)
                 count += 1
             else:
                 seen = media['playhead'] >= media['duration'] * QUEUE_WATCHED_THRESHOLD
                 if "all" in args or not seen:
-                    days = math.ceil((now - air).total_seconds())/60/60/24
+                    days = math.ceil((now - air).total_seconds()) / 60 / 60 / 24
                     if "following" not in args or days < QUEUE_FOLLOWING_THRESHOLD:
                         following_title(air)
                         if seen:
-                            print(color.GREEN, end='')
+                            print(Color.GREEN, end='')
                         print(format_media_display(media))
-                        print(color.END, end='')
+                        print(Color.END, end='')
                         count += 1
     print('')
     if count == 0:
-        print(color.RED+'No series found'+color.END)
+        print(Color.RED + 'No series found' + Color.END)
     else:
-        print((color.GREEN+'{} series found'+color.END).format(count))
+        print((Color.GREEN + '{} series found' + Color.END).format(count))
 
 
 def run_random(args):
-    if queue is None or "update" in args: update_queue()
-    if queue is None: return
-    items = list(queue)
+    if not queue or "update" in args:
+        update_queue()
+        if not queue:
+            return
     filtered = []
-    for item in items:
+    for item in queue:
         if item['last_watched_media_playhead'] > 0:
             media = item['most_likely_media']
             if media['playhead'] < media['duration'] * QUEUE_WATCHED_THRESHOLD:
                 filtered.append(media)
     run_media(random.choice(filtered)['url'])
 
+
 def run_search(search):
     if search != "":
-        if queue is None:
+        if not queue:
             update_queue()
-            if queue is None:
+            if not queue:
                 return
 
         print_overridable('Searching for \"{}\"...'.format(search))
@@ -822,42 +854,47 @@ def run_search(search):
         if media:
             print_overridable()
             if input_yes('Found \"{}\"\nDo you want to watch it'.format(format_media_display(media))):
-                startTime = 0
+                start_time = 0
                 duration = media['duration']
                 playhead = media['playhead']
-                if playhead > 0 and playhead < duration and input_yes('Do you want to continue watching from {}/{}'.format(mmss(playhead), mmss(duration))):
-                    startTime = playhead
-                run_media(media['url'], startTime)
+                if 0 < playhead < duration and input_yes(
+                        'Do you want to continue watching from {}/{}'.format(mmss(playhead), mmss(duration))):
+                    start_time = playhead
+                run_media(media['url'], start_time)
         else:
-            print_overridable(color.RED+'Could not find any series'+color.END, True)
+            print_overridable(Color.RED + 'Could not find any series' + Color.END, True)
     else:
-       print(color.RED+'Error: Empty search query'+color.END)
+        print(Color.RED + 'Error: Empty search query' + Color.END)
 
-def show_help(args = []):
+
+def show_help():
     print(
-        color.BOLD+'Crunchyroll CLI Help'+color.END+'\n\n'+
-        color.BOLD+'URLs'+color.END+'\n'+
-                   '       <episode url> [<start>]\n'+
-                   '         <start> determines how many seconds into the episode it should start.\n\n'+
-        color.BOLD+'COMMANDS'+color.END+'\n'+
-        color.BOLD+'       queue'+color.END+' [all] [following|watching] [update]\n'+
-                   '         Series where you\'ve seen past the watched threshold on the current episode are hidden unless "all" is provided.\n'+
-                   '         "watching" will filter out all series where you haven\'t began watching any episodes yet.\n'+
-                   '         "following" will filter out all series where an episode has been out for 2 weeks without you watching it.\n'+
-                   '         "update" will fetch the queue.\n'+
-        color.BOLD+'       watch'+color.END+' <search query>\n'+
-                   '         Search for a show in your queue and watch the episode you\'re currently on.\n'+
-        color.BOLD+'       prev'+color.END+' [resume|<start>]\n'+
-                   '         Watch the last media that was seen in the CLI.\n'+
-                   '         "resume" will continue the episode where it left off.\n'+
-                   '         <start> determines how many seconds into the episode it should start.\n'+
-        color.BOLD+'       rand'+color.END+' [update]\n'+
-                   '         Start watching a random episode from your queue.\n'+
-                   '         "update" will fetch the queue.\n'+
-        color.BOLD+'       exit'+color.END+'\n'
+        Color.BOLD + 'Crunchyroll CLI Help' + Color.END + '\n\n' +
+        Color.BOLD + 'URLs' + Color.END + '\n' +
+        '       <episode url> [<start>]\n' +
+        '         <start> determines how many seconds into the episode it should start.\n\n' +
+        Color.BOLD + 'COMMANDS' + Color.END + '\n' +
+        Color.BOLD + '       queue' + Color.END + ' [all] [following|watching] [update]\n' +
+        '         Series where you\'ve seen past the watched threshold on the current episode are hidden unless "all" is provided.\n' +
+        '         "watching" will filter out all series where you haven\'t began watching any episodes yet.\n' +
+        '         "following" will filter out all series where an episode has been out for 2 weeks without you watching it.\n' +
+        '         "update" will fetch the queue.\n' +
+        Color.BOLD + '       watch' + Color.END + ' <search query>\n' +
+        '         Search for a show in your queue and watch the episode you\'re currently on.\n' +
+        Color.BOLD + '       prev' + Color.END + ' [resume|<start>]\n' +
+        '         Watch the last media that was seen in the CLI.\n' +
+        '         "resume" will continue the episode where it left off.\n' +
+        '         <start> determines how many seconds into the episode it should start.\n' +
+        Color.BOLD + '       rand' + Color.END + ' [update]\n' +
+        '         Start watching a random episode from your queue.\n' +
+        '         "update" will fetch the queue.\n' +
+        Color.BOLD + '       exit' + Color.END + '\n'
     )
 
-def main_loop(args = []):
+
+def main_loop(args=None):
+    if args is None:
+        args = []
     while True:
         if len(args) > 0:
             command = args[0].lower()
@@ -876,43 +913,50 @@ def main_loop(args = []):
                     if len(args) > 1:
                         if args[1] == 'resume':
                             playhead = get_cache('previous_playhead')
-                            if not playhead: playhead = 0
+                            if not playhead:
+                                playhead = 0
                         else:
-                            try: playhead = int(args[1])
-                            except ValueError: pass
+                            try:
+                                playhead = int(args[1])
+                            except ValueError:
+                                pass
                     run_media(episode, playhead)
             elif command == 'exit':
                 exit()
             elif command == 'help':
-                show_help(args[1:])
-            elif re.search('^http(?:s)?://(?:[a-zA-Z]|\d|[$-_@.&+]|[!*\(\),]|(?:%[\w][\w]))+$', args[0]):
+                show_help()
+            elif re.search('^http(?:s)?://(?:[a-zA-Z]|\d|[$-_@.&+]|[!*(),]|(?:%[\w][\w]))+$', args[0]):
                 if re.search(r'[\D](\d{6})(?:[\D]|$)', args[0]):
                     playhead = 0
                     if len(args) > 1:
-                        try: playhead = int(args[1])
-                        except ValueError: pass
+                        try:
+                            playhead = int(args[1])
+                        except ValueError:
+                            pass
                     run_media(args[0], playhead)
                 else:
-                    print(color.RED+'Error: Unknown url format'+color.END)
+                    print(Color.RED + 'Error: Unknown url format' + Color.END)
             else:
-                print(color.RED+'Error: Unknown command '+command+color.END)
+                print(Color.RED + 'Error: Unknown command ' + command + Color.END)
         args = input('> ').split()
 
 
 def exit_signal_handler(signal = None, frame = None):
     print('')
     exit()
-signal.signal(signal.SIGINT, exit_signal_handler) #Remove traceback when exiting with ctrl+c
-signal.signal(signal.SIGTSTP, exit_signal_handler) #Remove stdout stuff when exiting with ctrl+z
 
-print(color.BOLD+'Welcome to '+color.YELLOW+'Crunchyroll CLI'+color.END)
-if len(argv) < 2 or argv[1].lower() != 'help': #Do not print this message if they're already calling help
-    print('Don\'t know what to do? Type "'+color.BOLD+'help'+color.END+'"')
+signal.signal(signal.SIGINT, exit_signal_handler)  # Remove traceback when exiting with ctrl+c
+signal.signal(signal.SIGTSTP, exit_signal_handler)  # Remove stdout stuff when exiting with ctrl+z
+
+print(Color.BOLD + 'Welcome to ' + Color.YELLOW + 'Crunchyroll CLI' + Color.END)
+if len(argv) < 2 or argv[1].lower() != 'help':  # Do not print this message if they're already calling help
+    print('Don\'t know what to do? Type "' + Color.BOLD + 'help' + Color.END + '"')
 print()
-if not (len(argv) > 1 and argv[1].lower() == 'auth') and AUTHENTICATE: #Do not authenticate here if the auth command is being called anyway
+if not (len(argv) > 1 and argv[1].lower() == 'auth') and AUTHENTICATE:
+    # Do not authenticate here if the auth command is being called anyway
     authenticate([])
 load_queue()
-try: #Remove traceback when exiting with ctrl+d
+try:  # Remove traceback when exiting with ctrl+d
     main_loop(argv[1:])
 except EOFError:
     exit_signal_handler()
