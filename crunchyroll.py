@@ -844,57 +844,55 @@ def download_media(pageurl):
     streamconfig = BeautifulSoup(call_rpc('RpcApiVideoEncode_GetStreamInfo', data).text, 'lxml-xml')
     streamconfig.encoding = 'utf-8'
 
-    print_overridable('Starting download...')
-
-    subarg = []
-    if sub:
-        subarg = ['--sub-file', quote(SUBTITLE_TEMP_PATH)]
-
     host = streamconfig.host.text
     file = streamconfig.file.text
-    if re.search('fplive\.net', host):
-        url1, = re.findall('.+/c\d+', host)
-        url2, = re.findall('c\d+\?.+', host)
+    if not file and not host:
+        # If stream info doesn't include host or file, we'll take it from standard config instead
+        file = config.file.text
+    if not host:
+        # TODO: Add HLS download support...?
+        print_overridable(Color.RED + 'Error: Episode is only available as HLS' + Color.END, True)
+        return
     else:
-        url1, = re.findall('.+/ondemand/', host)
-        url2, = re.findall('ondemand/.+', host)
-
-    proccommand = ['rtmpdump',
-                   '-r', url1,
-                   '-a', url2,
-                   '-f', 'WIN 11,8,800,50',
-                   '-m', '15',
-                   '-W', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf',
-                   '-p', pageurl,
-                   '-y', file,
-                   '-o', filename]
-    rtmpinfo = open(RTMP_INFO_TEMP_PATH, 'w+')
-    proc = subprocess.Popen(proccommand,
-                            stdin=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL,
-                            stderr=rtmpinfo
-                            )
-
-    while True:
-        rtmpinfo.seek(0)
-        for line in reversed(rtmpinfo.readlines()):
-            if line.rstrip() == '':
-                continue
-            r = re.search('([\d.]+) kB / ([\d.]+) sec', line)
-            if r:
-                print_overridable((Color.BOLD + 'Downloaded:' + Color.END + ' {}/{}').format(mmss(float(r.group(2))), mmss(duration)))
+        print_overridable('Starting download...')
+        if re.search('fplive\.net', host):
+            url1, = re.findall('.+/c\d+', host)
+            url2, = re.findall('c\d+\?.+', host)
+        else:
+            url1, = re.findall('.+/ondemand/', host)
+            url2, = re.findall('ondemand/.+', host)
+        proccommand = ['rtmpdump',
+                       '-r', url1,
+                       '-a', url2,
+                       '-f', 'WIN 11,8,800,50',
+                       '-m', '15',
+                       '-W', 'http://www.crunchyroll.com/vendor/ChromelessPlayerApp-c0d121b.swf',
+                       '-p', pageurl,
+                       '-y', file,
+                       '-o', filename]
+        rtmpinfo = open(RTMP_INFO_TEMP_PATH, 'w+')
+        proc = subprocess.Popen(proccommand,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL,
+                                stderr=rtmpinfo
+                                )
+        while True:
+            rtmpinfo.seek(0)
+            for line in reversed(rtmpinfo.readlines()):
+                if line.rstrip() == '':
+                    continue
+                r = re.search('([\d.]+) kB / ([\d.]+) sec', line)
+                if r:
+                    print_overridable((Color.BOLD + 'Downloaded:' + Color.END + ' {}/{}').format(mmss(float(r.group(2))), mmss(duration)))
+                    break
+            rtmpinfo.seek(0)
+            rtmpinfo.truncate()
+            if proc.poll() is not None:
                 break
-        rtmpinfo.seek(0)
-        rtmpinfo.truncate()
-        if proc.poll() is not None:
-            break
-
-    print_under()
-    rtmpinfo.close()
-    os.remove(RTMP_INFO_TEMP_PATH)
-
-    print(Color.GREEN + 'Episode downloaded' + Color.END)
-
+        rtmpinfo.close()
+        os.remove(RTMP_INFO_TEMP_PATH)
+        print_under()
+        print(Color.GREEN + 'Episode downloaded' + Color.END)
 
 def download_series(series_id):
     resp = call_api('list_collections', {
