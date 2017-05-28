@@ -17,6 +17,7 @@ import time
 import zlib
 from shlex import quote
 from sys import argv, exit
+from binascii import unhexlify, hexlify
 
 import requests
 from Crypto.Cipher import AES
@@ -850,9 +851,38 @@ def download_media(pageurl):
         # If stream info doesn't include host or file, we'll take it from standard config instead
         file = config.file.text
     if not host:
-        # TODO: Add HLS download support...?
-        print_overridable(Color.RED + 'Error: Episode is only available as HLS' + Color.END, True)
-        return
+        # print_overridable(Color.RED + 'Error: Episode is only available as HLS' + Color.END, True)
+        filename = basepath + '.ts'
+        aes = None
+        key = None
+        url = config.file.text
+        m3u8r = requests.get(url).text.splitlines()
+        if len(m3u8r) < 10:
+            url = random.choice(m3u8r[::2][1:])  # eases the burden on one server, makes it look less suspect
+            m3u8r = requests.get(url).text.splitlines()
+        urls = []
+        for l in m3u8r:
+            if l.startswith('#EXT-X-KEY:'):
+                key, = re.findall('URI="([^"]+)', l)
+                key = requests.get(key).content
+                # print('Key: ' + hexlify(key).decode('ascii'))
+                aes = AES.new(key, AES.MODE_CBC, b'\x00' * 16)
+            elif l.startswith('#EXT-X-MEDIA-SEQUENCE:'):
+                media_sequence, = re.findall('#EXT-X-MEDIA-SEQUENCE:(\d+)', l)
+                aes = AES.new(key, AES.MODE_CBC, unhexlify('{:032x}'.format(int(media_sequence))))
+            elif l.startswith('http'):
+                urls.append(l)
+
+        for u in urls:
+            file = requests.get(u, stream=True)
+            with open(filename, 'ab') as f:
+                print_overridable(f'\rDownloading {int((urls.index(u) / 2 * 100) / len(urls))}%')
+                file.raw.decode_content = True
+                for chunk in file:
+                    f.write(aes.decrypt(chunk))
+        print_under()
+        print(Color.GREEN + 'Episode downloaded' + Color.END)
+
     else:
         print_overridable('Starting download...')
         if re.search('fplive\.net', host):
