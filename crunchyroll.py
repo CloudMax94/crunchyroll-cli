@@ -18,6 +18,7 @@ import zlib
 from shlex import quote
 from sys import argv, exit
 from binascii import unhexlify, hexlify
+from tqdm import tqdm
 
 import requests
 from Crypto.Cipher import AES
@@ -872,13 +873,15 @@ def download_media(pageurl):
             elif l.startswith('http'):
                 urls.append(l)
 
+        pbar = tqdm(total=len(urls), unit="seq")
         for u in urls:
             file = requests.get(u, stream=True)
             with open(filename, 'ab') as f:
-                print_overridable((Color.BOLD + 'Downloaded:' + Color.END + ' {}%').format(int((urls.index(u) / 2 * 100) / len(urls))))
                 file.raw.decode_content = True
                 for chunk in file:
                     f.write(aes.decrypt(chunk))
+            pbar.update()
+        pbar.close()
 
     else:
         filename = basepath + '.mp4'
@@ -905,6 +908,10 @@ def download_media(pageurl):
                                 stdout=subprocess.DEVNULL,
                                 stderr=rtmpinfo
                                 )
+        # TODO: Use file size instead of duration for the progress bar
+        #       Need to obtain the total size
+        pbar = tqdm(total=int(float(duration)), unit="sec")
+        prev = 0
         while True:
             rtmpinfo.seek(0)
             for line in reversed(rtmpinfo.readlines()):
@@ -912,17 +919,16 @@ def download_media(pageurl):
                     continue
                 r = re.search('([\d.]+) kB / ([\d.]+) sec', line)
                 if r:
-                    print_overridable((Color.BOLD + 'Downloaded:' + Color.END + ' {}/{} ({}%)').format(
-                        mmss(float(r.group(2))),
-                        mmss(duration),
-                        int(float(r.group(2))/float(duration)*100))
-                    )
+                    current = float(r.group(2))
+                    pbar.update(int(current - prev))
+                    prev = current
                     break
             rtmpinfo.seek(0)
             rtmpinfo.truncate()
             if proc.poll() is not None:
                 break
         rtmpinfo.close()
+        pbar.close()
         os.remove(RTMP_INFO_TEMP_PATH)
     print_under()
     print(Color.GREEN + 'Episode downloaded' + Color.END)
@@ -965,10 +971,8 @@ def download_series(series_id):
             if os.path.isfile(basepath + '.' + fmt):
                 print('"' + basepath + '.' + fmt + '" already exists, skipping')
                 break
-        if exists:
-            continue
-        download_media(media['url'])
-
+        if not exists:
+            download_media(media['url'])
 
 def run_download(search):
     result = re.search('^https?:\/\/(?:www\.)?crunchyroll\.com\/', search)
