@@ -910,7 +910,7 @@ def download_media(pageurl):
                                 )
         # TODO: Use file size instead of duration for the progress bar
         #       Need to obtain the total size
-        pbar = tqdm(total=int(float(duration)), unit="sec")
+        pbar = tqdm(total=float(duration), unit="sec")
         prev = 0
         while True:
             rtmpinfo.seek(0)
@@ -920,7 +920,7 @@ def download_media(pageurl):
                 r = re.search('([\d.]+) kB / ([\d.]+) sec', line)
                 if r:
                     current = float(r.group(2))
-                    pbar.update(int(current - prev))
+                    pbar.update(current - prev)
                     prev = current
                     break
             rtmpinfo.seek(0)
@@ -969,6 +969,7 @@ def download_series(series_id):
         exists = False
         for fmt in ['mp4', 'ts']:
             if os.path.isfile(basepath + '.' + fmt):
+                exists = True
                 print('"' + basepath + '.' + fmt + '" already exists, skipping')
                 break
         if not exists:
