@@ -823,9 +823,7 @@ def download_media(pageurl):
                                     media_name=safe_filename(media_name),
                                     episode=int(episode)
                                     )
-    filename = basepath + '.mp4'
     subname = basepath + '.eng.ass'
-    print(Color.BOLD + 'File:       ' + Color.END + '{}'.format(filename))
     sub = config.find('subtitle', attrs={'link': None})
     if sub:
         print_overridable('Downloading subtitles...')
@@ -853,6 +851,7 @@ def download_media(pageurl):
     if not host:
         # print_overridable(Color.RED + 'Error: Episode is only available as HLS' + Color.END, True)
         filename = basepath + '.ts'
+        print(Color.BOLD + 'File:       ' + Color.END + '{}'.format(filename))
         aes = None
         key = None
         url = config.file.text
@@ -876,14 +875,14 @@ def download_media(pageurl):
         for u in urls:
             file = requests.get(u, stream=True)
             with open(filename, 'ab') as f:
-                print_overridable(f'\rDownloading {int((urls.index(u) / 2 * 100) / len(urls))}%')
+                print_overridable((Color.BOLD + 'Downloaded:' + Color.END + ' {}%').format(int((urls.index(u) / 2 * 100) / len(urls))))
                 file.raw.decode_content = True
                 for chunk in file:
                     f.write(aes.decrypt(chunk))
-        print_under()
-        print(Color.GREEN + 'Episode downloaded' + Color.END)
 
     else:
+        filename = basepath + '.mp4'
+        print(Color.BOLD + 'File:       ' + Color.END + '{}'.format(filename))
         print_overridable('Starting download...')
         if re.search('fplive\.net', host):
             url1, = re.findall('.+/c\d+', host)
@@ -913,7 +912,11 @@ def download_media(pageurl):
                     continue
                 r = re.search('([\d.]+) kB / ([\d.]+) sec', line)
                 if r:
-                    print_overridable((Color.BOLD + 'Downloaded:' + Color.END + ' {}/{}').format(mmss(float(r.group(2))), mmss(duration)))
+                    print_overridable((Color.BOLD + 'Downloaded:' + Color.END + ' {}/{} ({}%)').format(
+                        mmss(float(r.group(2))),
+                        mmss(duration),
+                        int(float(r.group(2))/float(duration)*100))
+                    )
                     break
             rtmpinfo.seek(0)
             rtmpinfo.truncate()
@@ -921,8 +924,8 @@ def download_media(pageurl):
                 break
         rtmpinfo.close()
         os.remove(RTMP_INFO_TEMP_PATH)
-        print_under()
-        print(Color.GREEN + 'Episode downloaded' + Color.END)
+    print_under()
+    print(Color.GREEN + 'Episode downloaded' + Color.END)
 
 def download_series(series_id):
     resp = call_api('list_collections', {
@@ -943,19 +946,26 @@ def download_series(series_id):
     collection = resp['data'][index]
     resp = call_api('list_media', {
         'collection_id': collection['collection_id'],
-        'fields': 'media.url,media.collection_name,media.name,media.episode_number',
+        'fields': 'media.url,media.collection_name,media.name,media.episode_number,media.clip',
         'limit': 9999
     })
     if resp['error']:
         print(Color.RED + 'Error: Could not retrieve media' + Color.END)
         return
     for media in resp['data']:
+        if media['clip']:
+            print('"{} - {}" is a clip, skipping'.format(media['collection_name'], media['name']))
+            continue
         basepath = DOWNLOAD_PATH.format(collection=safe_filename(media['collection_name']),
                                         media_name=safe_filename(media['name']),
                                         episode=int(media['episode_number'])
                                         )
-        if os.path.isfile(basepath + '.mp4'):
-            print('"' + basepath + '.mp4" already exists, skipping')
+        exists = False
+        for fmt in ['mp4', 'ts']:
+            if os.path.isfile(basepath + '.' + fmt):
+                print('"' + basepath + '.' + fmt + '" already exists, skipping')
+                break
+        if exists:
             continue
         download_media(media['url'])
 
