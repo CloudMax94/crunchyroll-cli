@@ -3,6 +3,7 @@ import base64
 import concurrent.futures
 import copy
 import datetime
+import errno
 import getpass
 import hashlib
 import json
@@ -15,15 +16,15 @@ import string
 import subprocess
 import time
 import zlib
+from binascii import unhexlify
 from shlex import quote
 from sys import argv, exit
-from binascii import unhexlify, hexlify
-from tqdm import tqdm
 
 import requests
 from Crypto.Cipher import AES
 from bs4 import BeautifulSoup
 from dateutil import tz
+from tqdm import tqdm
 
 # Where should the cache file be stored?
 # This file is used to store generated device id, session id, username and password
@@ -769,7 +770,7 @@ def run_media(pageurl, playhead=0):
 
 
 def safe_filename(filename):
-    keepcharacters = (' ','.','_')
+    keepcharacters = (' ', '.', '_')
     return "".join(c for c in filename if c.isalnum() or c in keepcharacters).rstrip()
 
 
@@ -834,7 +835,7 @@ def download_media(pageurl):
         if not os.path.exists(os.path.dirname(subname)):
             try:
                 os.makedirs(os.path.dirname(subname))
-            except OSError as exc: # Guard against race condition
+            except OSError as exc:  # Guard against race condition
                 if exc.errno != errno.EEXIST:
                     raise
         open(subname, 'w').write(convert(decode_subtitles(_id, _iv, _subdata).decode('utf-8')))
@@ -850,7 +851,6 @@ def download_media(pageurl):
         # If stream info doesn't include host or file, we'll take it from standard config instead
         file = config.file.text
     if not host:
-        # print_overridable(Color.RED + 'Error: Episode is only available as HLS' + Color.END, True)
         filename = basepath + '.ts'
         print(Color.BOLD + 'File:       ' + Color.END + '{}'.format(filename))
         aes = None
@@ -908,8 +908,7 @@ def download_media(pageurl):
                                 stdout=subprocess.DEVNULL,
                                 stderr=rtmpinfo
                                 )
-        # TODO: Use file size instead of duration for the progress bar
-        #       Need to obtain the total size
+        # TODO: Use file size instead of duration for the progress bar. Need to obtain the total size
         pbar = tqdm(total=float(duration), unit="sec")
         prev = 0
         while True:
@@ -917,9 +916,9 @@ def download_media(pageurl):
             for line in reversed(rtmpinfo.readlines()):
                 if line.rstrip() == '':
                     continue
-                r = re.search('([\d.]+) kB / ([\d.]+) sec', line)
+                r = re.search('[\d.]+ kB / ([\d.]+) sec', line)
                 if r:
-                    current = float(r.group(2))
+                    current = float(r.group(1))
                     pbar.update(current - prev)
                     prev = current
                     break
@@ -933,6 +932,7 @@ def download_media(pageurl):
     print_under()
     print(Color.GREEN + 'Episode downloaded' + Color.END)
 
+
 def download_series(series_id):
     resp = call_api('list_collections', {
         'series_id': series_id
@@ -941,14 +941,14 @@ def download_series(series_id):
         print(Color.RED + 'Error: Could not retrieve collections' + Color.END)
         return
     print(Color.BOLD + 'Collections:' + Color.END)
-    for i, collection in enumerate(resp['data']):
-        print((Color.BOLD + '{}:' + Color.END + ' {}').format(i+1, collection['name']))
+    for c, collection in enumerate(resp['data']):
+        print((Color.BOLD + '{}:' + Color.END + ' {}').format(c + 1, collection['name']))
     index = input('Which collection do you want to download (Specify a number)? ')
     if not index.isdigit():
-        return # Did not specify a digit
+        return  # Did not specify a digit
     index = int(index) - 1
     if index >= len(resp['data']):
-        return # Invalid number
+        return  # Invalid number
     collection = resp['data'][index]
     resp = call_api('list_media', {
         'collection_id': collection['collection_id'],
@@ -975,16 +975,17 @@ def download_series(series_id):
         if not exists:
             download_media(media['url'])
 
+
 def run_download(search):
-    result = re.search('^https?:\/\/(?:www\.)?crunchyroll\.com\/', search)
+    result = re.search('^https?://(?:www\.)?crunchyroll\.com/', search)
     if result:
         # Check if it is a media URL
-        result = re.search('^https?:\/\/(?:www\.)?crunchyroll\.com\/[^\/]+\/.*-[0-9]+\/?(\?|#|$)', search)
+        result = re.search('^https?://(?:www\.)?crunchyroll\.com/[^/]+/.*-[0-9]+/?(\?|#|$)', search)
         if result:
             download_media(search)
             return
         # Check if it could be a series URL
-        result = re.search('^https?:\/\/(?:www\.)?crunchyroll\.com\/[^\/]+\/?(\?|#|$)', search)
+        result = re.search('^https?://(?:www\.)?crunchyroll\.com/[^/]+/?(\?|#|$)', search)
         if result:
             headers = {
                 'Host': RPC_API_HOST,
@@ -1225,7 +1226,7 @@ def main_loop(args=None):
         args = input('> ').split()
 
 
-def exit_signal_handler(signum = None, frame = None):
+def exit_signal_handler():
     print()
     exit()
 
