@@ -14,6 +14,7 @@ import re
 import signal
 import string
 import subprocess
+import tempfile
 import time
 import zlib
 from binascii import unhexlify
@@ -31,8 +32,6 @@ from tqdm import tqdm
 CACHE_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.crcache'
 # Where should the subtitle file be stored?
 SUBTITLE_TEMP_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.ass'
-# Where should the temporary RTMP info file be stored? (used to extract info from stderr)
-RTMP_INFO_TEMP_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.rtmpinfo'
 # Where downloads are saved. Available variables: collection, media_name, episode
 DOWNLOAD_PATH = os.path.dirname(os.path.realpath(__file__)) + '/downloads/{collection}/{collection} - e{episode:02d}'
 
@@ -643,7 +642,7 @@ def run_media(pageurl, playhead=0):
                            '-p', pageurl,
                            '-y', file,
                            '--start', str(playhead)]
-            rtmpinfo = open(RTMP_INFO_TEMP_PATH, 'w+')
+            rtmpinfo = tempfile.NamedTemporaryFile('w+')
             rtmpproc = subprocess.Popen(proccommand,
                                         stderr=rtmpinfo,
                                         # NOTE: There is probably a much better way to obtain stderr without
@@ -745,7 +744,6 @@ def run_media(pageurl, playhead=0):
         set_cache('previous_playhead', playhead)
         if rtmpinfo:
             rtmpinfo.close()
-            os.remove(RTMP_INFO_TEMP_PATH)
         if sub:
             os.remove(SUBTITLE_TEMP_PATH)
 
@@ -825,20 +823,7 @@ def download_media(pageurl):
                                     media_name=safe_filename(media_name),
                                     episode=int(episode)
                                     )
-    subname = basepath + '.eng.ass'
-    sub = config.find('subtitle', attrs={'link': None})
-    if sub:
-        print_overridable('Downloading subtitles...')
-        _id = int(sub['id'])
-        _iv = sub.iv.text
-        _subdata = sub.data.text
-        if not os.path.exists(os.path.dirname(subname)):
-            try:
-                os.makedirs(os.path.dirname(subname))
-            except OSError as exc:  # Guard against race condition
-                if exc.errno != errno.EEXIST:
-                    raise
-        open(subname, 'w').write(convert(decode_subtitles(_id, _iv, _subdata).decode('utf-8')))
+    print(Color.BOLD + 'File:       ' + Color.END + '{}'.format(basepath + '.mkv'))
 
     print_overridable('Fetching stream information...')
 
@@ -851,8 +836,9 @@ def download_media(pageurl):
         # If stream info doesn't include host or file, we'll take it from standard config instead
         file = config.file.text
     if not host:
-        filename = basepath + '.ts'
-        print(Color.BOLD + 'File:       ' + Color.END + '{}'.format(filename))
+        fileformat = 'ts'
+        filename = basepath + '.' + fileformat
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         aes = None
         key = None
         url = config.file.text
@@ -884,8 +870,9 @@ def download_media(pageurl):
         pbar.close()
 
     else:
-        filename = basepath + '.mp4'
-        print(Color.BOLD + 'File:       ' + Color.END + '{}'.format(filename))
+        fileformat = 'mp4'
+        filename = basepath + '.' + fileformat
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         print_overridable('Starting download...')
         if re.search('fplive\.net', host):
             url1, = re.findall('.+/c\d+', host)
@@ -902,7 +889,7 @@ def download_media(pageurl):
                        '-p', pageurl,
                        '-y', file,
                        '-o', filename]
-        rtmpinfo = open(RTMP_INFO_TEMP_PATH, 'w+')
+        rtmpinfo = tempfile.NamedTemporaryFile('w+')
         proc = subprocess.Popen(proccommand,
                                 stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL,
@@ -928,7 +915,59 @@ def download_media(pageurl):
                 break
         rtmpinfo.close()
         pbar.close()
-        os.remove(RTMP_INFO_TEMP_PATH)
+
+    subs = config.findAll('subtitle', attrs={'link': True})
+    subConfigs = []
+    for subEle in subs:
+        title = subEle['title']
+        print_overridable('Downloading and decoding "{}" subtitles...'.format(title))
+        subResponse = BeautifulSoup(requests.get(subEle['link'], headers={
+            'User-Agent': USER_AGENT
+        }, cookies={'sess_id': get_cache("session_id")}).text, 'lxml-xml')
+        sub = subResponse.find('subtitle')
+        if sub:
+            langCode = ''
+            # TODO: get language code from the subtitle name. Maybe set up a dict with all the subtitles name cruchyroll uses or something?
+            temp = tempfile.NamedTemporaryFile(mode='w+')
+            subConfigs.append({
+                'title': title,
+                'lang': langCode,
+                'file': temp,
+                'default': subEle['default']=='1'
+            })
+            temp.write(convert(decode_subtitles(int(sub['id']), sub.iv.text, sub.data.text).decode('utf-8')))
+
+    mkvfile = basepath + '.mkv'
+    print_overridable('Creating ' + mkvfile + '...')
+    proccommand = ['mkvmerge',
+                   '-o', mkvfile,
+                   '--title', '{} - Episode {} - {}'.format(collection_name, episode, media_name),
+                   # NOTE: We do not know the audio language
+                   # '--language', '1:jpn',
+                   # '--track-name', '1:"Japanese"',
+                   filename]
+    for subConfig in subConfigs:
+        if subConfig['default']:
+            proccommand.extend(['--default-track', '0:yes'])
+        lang = subConfig['lang']
+        if lang:
+            proccommand.extend(['--language', '0:' + lang])
+        proccommand.extend([
+            '--track-name', '0:"' + subConfig['title'] + '"',
+            subConfig['file'].name
+        ])
+
+    proc = subprocess.Popen(proccommand, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    output = proc.communicate()
+    if proc.returncode != 0:
+        print_overridable((Color.RED + 'Error: Could not generate mkv file, saving as {} instead' + Color.END).format(fileformat), True)
+        # TODO: Copy the temp sub files to the download directory so that they aren't lost if the mkv can't be generated
+    else:
+        os.remove(filename) # mkv was successfully created, remove the original file
+    # Close all the temporary subtitle files
+    for subConfig in subConfigs:
+        subConfig['file'].close()
+
     print_under()
     print(Color.GREEN + 'Episode downloaded' + Color.END)
 
@@ -967,7 +1006,7 @@ def download_series(series_id):
                                         episode=int(media['episode_number'])
                                         )
         exists = False
-        for fmt in ['mp4', 'ts']:
+        for fmt in ['mkv', 'mp4', 'ts']:
             if os.path.isfile(basepath + '.' + fmt):
                 exists = True
                 print('"' + basepath + '.' + fmt + '" already exists, skipping')
