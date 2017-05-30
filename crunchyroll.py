@@ -48,6 +48,8 @@ AUTO_PLAYHEAD = 0
 AUTO_PLAYHEAD_END = False
 # How many seconds should the queue be cached before expiring
 QUEUE_CACHE_EXPIRES = 60 * 60
+# Should it force the region to US when generating a session?
+FORCE_US_SESSION = True
 
 # END OF CONFIGURATION
 
@@ -295,7 +297,18 @@ def create_session():
 
     print_overridable('Creating session...')
     unset_cache('session_id')  # The call will fail if you have an expired session set
-    resp = call_api('start_session', data)
+
+    if FORCE_US_SESSION:
+        host = 'api-manga.crunchyroll.com'
+        data['api_ver'] = '1.0'
+        resp = requests.get('http://{}/{}'.format(host, 'cr_start_session'), headers={
+            'Host': host,
+            'User-Agent': USER_AGENT
+        }, params=data)
+        resp.encoding = 'utf-8'
+        resp = resp.json()
+    else:
+        resp = call_api('start_session', data)
 
     if resp['error']:
         print_overridable(Color.RED + 'Error: ' + resp['message'] + Color.END, True)
@@ -926,7 +939,19 @@ def download_media(pageurl):
         sub = sub_response.find('subtitle')
         if sub:
             lang_code = ''
-            # TODO: get language code from the subtitle name. Maybe set up a dict with all the subtitles name Crunchyroll uses or something?
+            # TODO: Add support for remaining languages on crunchyroll
+            if "English" in title:
+                lang_code = 'eng'
+            elif "Español" in title:
+                lang_code = 'spa'
+            elif "Português" in title:
+                lang_code = 'por'
+            elif "Deutsch" in title:
+                lang_code = 'deu'
+            elif "Français" in title:
+                lang_code = 'fre'
+            elif "Italiano" in title:
+                lang_code = 'ita'
             temp = tempfile.NamedTemporaryFile(mode='w+')
             sub_configs.append({
                 'title': title,
@@ -957,6 +982,7 @@ def download_media(pageurl):
         ])
 
     proc = subprocess.Popen(proccommand, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    proc.communicate()
     if proc.returncode != 0:
         print_overridable(
             (Color.RED + 'Error: Could not generate mkv file, saving as {} instead' + Color.END).format(fileformat),
