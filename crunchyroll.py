@@ -3,7 +3,6 @@ import base64
 import concurrent.futures
 import copy
 import datetime
-import errno
 import getpass
 import hashlib
 import json
@@ -917,23 +916,23 @@ def download_media(pageurl):
         pbar.close()
 
     subs = config.findAll('subtitle', attrs={'link': True})
-    subConfigs = []
+    sub_configs = []
     for subEle in subs:
         title = subEle['title']
         print_overridable('Downloading and decoding "{}" subtitles...'.format(title))
-        subResponse = BeautifulSoup(requests.get(subEle['link'], headers={
+        sub_response = BeautifulSoup(requests.get(subEle['link'], headers={
             'User-Agent': USER_AGENT
         }, cookies={'sess_id': get_cache("session_id")}).text, 'lxml-xml')
-        sub = subResponse.find('subtitle')
+        sub = sub_response.find('subtitle')
         if sub:
-            langCode = ''
-            # TODO: get language code from the subtitle name. Maybe set up a dict with all the subtitles name cruchyroll uses or something?
+            lang_code = ''
+            # TODO: get language code from the subtitle name. Maybe set up a dict with all the subtitles name Crunchyroll uses or something?
             temp = tempfile.NamedTemporaryFile(mode='w+')
-            subConfigs.append({
+            sub_configs.append({
                 'title': title,
-                'lang': langCode,
+                'lang': lang_code,
                 'file': temp,
-                'default': subEle['default']=='1'
+                'default': subEle['default'] == '1'
             })
             temp.write(convert(decode_subtitles(int(sub['id']), sub.iv.text, sub.data.text).decode('utf-8')))
 
@@ -946,7 +945,7 @@ def download_media(pageurl):
                    # '--language', '1:jpn',
                    # '--track-name', '1:"Japanese"',
                    filename]
-    for subConfig in subConfigs:
+    for subConfig in sub_configs:
         if subConfig['default']:
             proccommand.extend(['--default-track', '0:yes'])
         lang = subConfig['lang']
@@ -958,14 +957,15 @@ def download_media(pageurl):
         ])
 
     proc = subprocess.Popen(proccommand, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    output = proc.communicate()
     if proc.returncode != 0:
-        print_overridable((Color.RED + 'Error: Could not generate mkv file, saving as {} instead' + Color.END).format(fileformat), True)
+        print_overridable(
+            (Color.RED + 'Error: Could not generate mkv file, saving as {} instead' + Color.END).format(fileformat),
+            True)
         # TODO: Copy the temp sub files to the download directory so that they aren't lost if the mkv can't be generated
     else:
-        os.remove(filename) # mkv was successfully created, remove the original file
+        os.remove(filename)  # mkv was successfully created, remove the original file
     # Close all the temporary subtitle files
-    for subConfig in subConfigs:
+    for subConfig in sub_configs:
         subConfig['file'].close()
 
     print_under()
