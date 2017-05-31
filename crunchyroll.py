@@ -10,6 +10,7 @@ import math
 import os
 import random
 import re
+import shutil
 import signal
 import string
 import subprocess
@@ -930,10 +931,10 @@ def download_media(pageurl):
 
     subs = config.findAll('subtitle', attrs={'link': True})
     sub_configs = []
-    for subEle in subs:
-        title = subEle['title']
+    for sub_ele in subs:
+        title = sub_ele['title']
         print_overridable('Downloading and decoding "{}" subtitles...'.format(title))
-        sub_response = BeautifulSoup(requests.get(subEle['link'], headers={
+        sub_response = BeautifulSoup(requests.get(sub_ele['link'], headers={
             'User-Agent': USER_AGENT
         }, cookies={'sess_id': get_cache("session_id")}).text, 'lxml-xml')
         sub = sub_response.find('subtitle')
@@ -957,7 +958,7 @@ def download_media(pageurl):
                 'title': title,
                 'lang': lang_code,
                 'file': temp,
-                'default': subEle['default'] == '1'
+                'default': sub_ele['default'] == '1'
             })
             temp.write(convert(decode_subtitles(int(sub['id']), sub.iv.text, sub.data.text).decode('utf-8')))
 
@@ -970,15 +971,15 @@ def download_media(pageurl):
                    # '--language', '1:jpn',
                    # '--track-name', '1:"Japanese"',
                    filename]
-    for subConfig in sub_configs:
-        if subConfig['default']:
+    for sub_config in sub_configs:
+        if sub_config['default']:
             proccommand.extend(['--default-track', '0:yes'])
-        lang = subConfig['lang']
+        lang = sub_config['lang']
         if lang:
             proccommand.extend(['--language', '0:' + lang])
         proccommand.extend([
-            '--track-name', '0:"' + subConfig['title'] + '"',
-            subConfig['file'].name
+            '--track-name', '0:"' + sub_config['title'] + '"',
+            sub_config['file'].name
         ])
 
     proc = subprocess.Popen(proccommand, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -987,12 +988,15 @@ def download_media(pageurl):
         print_overridable(
             (Color.RED + 'Error: Could not generate mkv file, saving as {} instead' + Color.END).format(fileformat),
             True)
-        # TODO: Copy the temp sub files to the download directory so that they aren't lost if the mkv can't be generated
+        # We copy the temporary subtitle files so that they aren't lost
+        for sub_config in sub_configs:
+            if sub_config['lang']:
+                shutil.copy(sub_config['file'].name, basepath + '.' + sub_config['lang'] + '.ass')
     else:
         os.remove(filename)  # mkv was successfully created, remove the original file
     # Close all the temporary subtitle files
-    for subConfig in sub_configs:
-        subConfig['file'].close()
+    for sub_config in sub_configs:
+        sub_config['file'].close()
 
     print_under()
     print(Color.GREEN + 'Episode downloaded' + Color.END)
