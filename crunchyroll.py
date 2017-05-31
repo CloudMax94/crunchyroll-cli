@@ -30,8 +30,6 @@ from tqdm import tqdm
 # Where should the cache file be stored?
 # This file is used to store generated device id, session id, username and password
 CACHE_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.crcache'
-# Where should the subtitle file be stored?
-SUBTITLE_TEMP_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.ass'
 # Where downloads are saved. Available variables: collection, media_name, episode
 DOWNLOAD_PATH = os.path.dirname(os.path.realpath(__file__)) + '/downloads/{collection}/{collection} - e{episode:02d}'
 
@@ -50,7 +48,7 @@ AUTO_PLAYHEAD_END = False
 # How many seconds should the queue be cached before expiring
 QUEUE_CACHE_EXPIRES = 60 * 60
 # Should it force the region to US when generating a session?
-FORCE_US_SESSION = True
+FORCE_US_SESSION = False
 
 # END OF CONFIGURATION
 
@@ -606,12 +604,14 @@ def run_media(pageurl, playhead=0):
         print(Color.BOLD + 'Duration:   ' + Color.END + '{}'.format(mmss(duration)))
 
         sub = config.find('subtitle', attrs={'link': None})
+        sub_file = None
         if sub:
             print_overridable('Preparing subtitles...')
             _id = int(sub['id'])
             _iv = sub.iv.text
             _subdata = sub.data.text
-            open(SUBTITLE_TEMP_PATH, 'w').write(convert(decode_subtitles(_id, _iv, _subdata).decode('utf-8')))
+            sub_file = tempfile.NamedTemporaryFile('w')
+            sub_file.write(convert(decode_subtitles(_id, _iv, _subdata).decode('utf-8')))
 
         print_overridable('Fetching stream information...')
 
@@ -621,8 +621,8 @@ def run_media(pageurl, playhead=0):
         print_overridable('Starting stream...')
 
         subarg = []
-        if sub:
-            subarg = ['--sub-file', quote(SUBTITLE_TEMP_PATH)]
+        if sub_file:
+            subarg = ['--sub-file', quote(sub_file.name)]
 
         rtmpinfo = None
         if not streamconfig.host.text:
@@ -757,8 +757,8 @@ def run_media(pageurl, playhead=0):
         set_cache('previous_playhead', playhead)
         if rtmpinfo:
             rtmpinfo.close()
-        if sub:
-            os.remove(SUBTITLE_TEMP_PATH)
+        if sub_file:
+            sub_file.close()
 
         if get_cache("session_id") and (AUTO_PLAYHEAD_END or input_yes(
                 'Do you want to update playhead to {}/{}'.format(mmss(playhead), mmss(duration)))):
