@@ -1117,11 +1117,12 @@ def show_queue(args=None):
     if args is None:
         args = []
     crnt_day = -1
+    mode = ""
+    hide_seen = False
 
     def following_title(airtime):
-        nonlocal args
         nonlocal crnt_day
-        if "following" in args:
+        if mode is "following":
             week_day = airtime.weekday()
             if week_day > crnt_day:
                 crnt_day = week_day
@@ -1132,38 +1133,45 @@ def show_queue(args=None):
         if not queue:
             return
 
-    if "following" in args:
-        queue.sort(key=lambda e: e['most_likely_media']['available_time'].weekday())
-
     title = "All"
-    if "following" in args:
+    if "following" in args or "f" in args:
+        mode = "following"
         title = "Following"
-    elif "watching" in args:
+        queue.sort(key=lambda e: e['most_likely_media']['available_time'].weekday())
+    elif "watching" in args or "w" in args:
+        mode = "watching"
         title = "Watching"
-    if "all" not in args:
-        title += " (Unseen)"
+        hide_seen = True # Watching always apply the unseen filter
+    if "unseen" in args or "u" in args:
+        title += " (unseen)"
+        hide_seen = True
     print(Color.BOLD + title + ':' + Color.END)
     now = datetime.datetime.utcnow().replace(tzinfo=tz.tzutc())
     count = 0
     for item in queue:
         media = item['most_likely_media']
-        if ("watching" not in args and "following" not in args) or item['last_watched_media_playhead'] > 0:
-            air = media['available_time']
-            if not media['duration'] or air >= now:
-                following_title(air)
-                print(Color.YELLOW + format_media_display(media) + Color.END)
-                count += 1
-            else:
-                seen = media['playhead'] >= media['duration'] * QUEUE_WATCHED_THRESHOLD
-                if "all" in args or not seen:
-                    days = math.ceil((now - air).total_seconds()) / 60 / 60 / 24
-                    if "following" not in args or days < QUEUE_FOLLOWING_THRESHOLD:
-                        following_title(air)
-                        if seen:
-                            print(Color.GREEN, end='')
-                        print(format_media_display(media))
-                        print(Color.END, end='')
-                        count += 1
+        if mode and item['last_watched_media_playhead'] < 1:
+            continue # Modes filter out series that you have not watched
+        air = media['available_time']
+        if not media['duration'] or air >= now:
+            if mode is "watching":
+                continue # The watching mode does not include unreleased episodes
+            following_title(air)
+            print(Color.YELLOW + format_media_display(media) + Color.END)
+            count += 1
+        else:
+            seen = media['playhead'] >= media['duration'] * QUEUE_WATCHED_THRESHOLD
+            if hide_seen and seen:
+                continue # Hide seen episodes if the unseen filter is set
+            days = math.ceil((now - air).total_seconds()) / 60 / 60 / 24
+            if mode is "following" and days >= QUEUE_FOLLOWING_THRESHOLD:
+                continue # Hide episodes that are past the following threshold in following mode
+            following_title(air)
+            if seen:
+                print(Color.GREEN, end='') # Make watched episodes green
+            print(format_media_display(media))
+            print(Color.END, end='')
+            count += 1
     print('')
     if count == 0:
         print(Color.RED + 'No series found' + Color.END)
@@ -1222,11 +1230,11 @@ def show_help():
         '       <episode url> [<start>]\n' +
         '         <start> determines how many seconds into the episode it should start.\n\n' +
         Color.BOLD + 'COMMANDS' + Color.END + '\n' +
-        Color.BOLD + '       queue' + Color.END + ' [all] [following|watching] [update]\n' +
-        '         Series where you\'ve seen past the watched threshold on the current episode are hidden unless "all" is provided.\n' +
-        '         "watching" will filter out all series where you haven\'t began watching any episodes yet.\n' +
-        '         "following" will filter out all series where an episode has been out for 2 weeks without you watching it.\n' +
-        '         "update" will fetch the queue.\n' +
+        Color.BOLD + '       queue' + Color.END + ' [following|watching] [unseen] [update]\n' +
+        '         "following" filters out all series where an episode has been out for ' + str(QUEUE_FOLLOWING_THRESHOLD) + ' days without you watching it.\n' +
+        '         "watching" filters out all series you\'re following, as well as ones you have not begun watching yet.\n' +
+        '         "unseen" filters out series where you\'ve seen past the watched threshold on the current episode.\n' +
+        '         "update" fetches the queue.\n' +
         Color.BOLD + '       watch' + Color.END + ' <search query>\n' +
         '         Search for a show in your queue and watch the episode you\'re currently on.\n' +
         Color.BOLD + '       download' + Color.END + ' [<series url>|<media url>|<search query>]\n' +
