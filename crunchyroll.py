@@ -28,7 +28,7 @@ from dateutil import tz
 from tqdm import tqdm
 
 # Where should the cache file be stored?
-# This file is used to store generated device id, session id, username and password
+# This file is used to store settings, authentication, queue and more
 CACHE_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.crcache'
 # Where downloads are saved. Available variables: collection, media_name, episode
 DOWNLOAD_PATH = os.path.dirname(os.path.realpath(__file__)) + '/downloads/{collection}/{collection} - e{episode:02d}'
@@ -370,12 +370,7 @@ def authenticate(args):
             if input_yes("Remember username"):
                 set_cache("user", user)
                 print(Color.GREEN + 'Username saved' + Color.END)
-        password = get_cache("password")
-        if not password:
-            password = getpass.getpass()
-            if input_yes("Remember password"):
-                set_cache("password", password)
-                print(Color.GREEN + 'Password saved' + Color.END)
+        password = getpass.getpass()
         authenticate_session(user, password, sess_id)
 
 
