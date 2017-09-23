@@ -536,11 +536,11 @@ def update_queue():
                 if not item[media]:
                     continue
                 for key in ['duration', 'playhead']:
-                    val = item[media][key]
-                    if not val:
-                        val = 0
-                    else:
+                    if key in item[media]:
+                        val = item[media][key]
                         val = int(val)
+                    else:
+                        val = 0
                     queue[index][media][key] = val
                 queue[index][media]['available_time'] = timestamp_to_datetime(queue[index][media]['available_time'])
         print_overridable(Color.GREEN + result_str + Color.END, True)
