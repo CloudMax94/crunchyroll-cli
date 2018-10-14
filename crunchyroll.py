@@ -111,6 +111,8 @@ def print_under(pstring=''):
 
 def input_yes(question):
     answer = input(question + ' (Y/N)? ')
+    if not answer:
+        answer = 'y'
     return answer.lower() == 'y'
 
 
@@ -283,8 +285,8 @@ def get_device_id():
 def create_session():
     data = {
         "device_id": get_device_id(),
-        "device_type": "com.crunchyroll.iphone",
-        "access_token": "QWjz212GspMHH9h"
+        "device_type": "com.crunchyroll.crunchyroid",
+        "access_token": "Scwg9PRRZ19iVwD"
     }
     expires = get_cache("expires")
     auth = get_cache("auth")
@@ -1041,15 +1043,15 @@ def download_series(series_id):
 
 
 def run_download(search):
-    result = re.search('^https?://(?:www\.)?crunchyroll\.com/', search)
+    result = re.search(r'^https?://(?:www\.)?crunchyroll\.com/', search)
     if result:
         # Check if it is a media URL
-        result = re.search('^https?://(?:www\.)?crunchyroll\.com/[^/]+/.*-[0-9]+/?(\?|#|$)', search)
+        result = re.search(r'^https?://(?:www\.)?crunchyroll\.com/[^/]+/.*-[0-9]+/?(\?|#|$)', search)
         if result:
             download_media(search)
             return
         # Check if it could be a series URL
-        result = re.search('^https?://(?:www\.)?crunchyroll\.com/[^/]+/?(\?|#|$)', search)
+        result = re.search(r'^https?://(?:www\.)?crunchyroll\.com/[^/]+/?(\?|#|$)', search)
         if result:
             headers = {
                 'Host': RPC_API_HOST,
@@ -1136,7 +1138,7 @@ def show_queue(args=None):
     elif "watching" in args or "w" in args:
         mode = "watching"
         title = "Watching"
-        hide_seen = True # Watching always apply the unseen filter
+        hide_seen = True  # Watching always apply the unseen filter
     if "unseen" in args or "u" in args:
         title += " (unseen)"
         hide_seen = True
@@ -1146,24 +1148,24 @@ def show_queue(args=None):
     for item in queue:
         media = item['most_likely_media']
         if mode and item['last_watched_media_playhead'] < 1:
-            continue # Modes filter out series that you have not watched
+            continue  # Modes filter out series that you have not watched
         air = media['available_time']
         if not media['duration'] or air >= now:
             if mode is "watching":
-                continue # The watching mode does not include unreleased episodes
+                continue  # The watching mode does not include unreleased episodes
             following_title(air)
             print(Color.YELLOW + format_media_display(media) + Color.END)
             count += 1
         else:
             seen = media['playhead'] >= media['duration'] * QUEUE_WATCHED_THRESHOLD
             if hide_seen and seen:
-                continue # Hide seen episodes if the unseen filter is set
+                continue  # Hide seen episodes if the unseen filter is set
             days = math.ceil((now - air).total_seconds()) / 60 / 60 / 24
             if mode is "following" and days >= QUEUE_FOLLOWING_THRESHOLD:
-                continue # Hide episodes that are past the following threshold in following mode
+                continue  # Hide episodes that are past the following threshold in following mode
             following_title(air)
             if seen:
-                print(Color.GREEN, end='') # Make watched episodes green
+                print(Color.GREEN, end='')  # Make watched episodes green
             print(format_media_display(media))
             print(Color.END, end='')
             count += 1
