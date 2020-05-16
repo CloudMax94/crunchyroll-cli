@@ -30,7 +30,8 @@ from tqdm import tqdm
 # Where should the cache file be stored?
 # This file is used to store settings, authentication, queue and more
 CACHE_PATH = os.path.dirname(os.path.realpath(__file__)) + '/.crcache'
-# Where downloads are saved. Available variables: collection, media_name, episode
+# Where downloads are saved. Available variables: collection, media_name, episode.
+# episode is set to 0 when missing
 DOWNLOAD_PATH = os.path.dirname(os.path.realpath(__file__)) + '/downloads/{collection}/{collection} - e{episode:02d}'
 
 # How many days must pass before the show isn't considered followed
@@ -840,13 +841,18 @@ def download_media(pageurl):
     episode = config.episode_number.text
     if episode:
         print(Color.BOLD + 'Episode:    ' + Color.END + episode)
+        episode = int(episode)
+    else:
+        episode = 0
     if media_name:
         print(Color.BOLD + 'Title:      ' + Color.END + media_name)
+    else:
+        media_name = 'Untitled'
     duration = config.duration.text
 
     basepath = DOWNLOAD_PATH.format(collection=safe_filename(collection_name),
                                     media_name=safe_filename(media_name),
-                                    episode=int(episode)
+                                    episode=episode
                                     )
     print(Color.BOLD + 'File:       ' + Color.END + '{}'.format(basepath + '.mkv'))
 
