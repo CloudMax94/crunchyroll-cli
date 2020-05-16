@@ -130,7 +130,7 @@ def timestamp_to_datetime(ts):
 
 
 # TODO: Handle re-authentication when session has expired directly in the API calls
-def call_api(name, params, secure=False):
+def call_api(name, params, secure=False, version=0):
     protocol = "http"
     if secure:
         protocol += "s"
@@ -141,7 +141,7 @@ def call_api(name, params, secure=False):
     sess_id = get_cache("session_id")
     if sess_id:
         params['session_id'] = sess_id
-    resp = requests.post('{}://{}/{}.0.json'.format(protocol, API_HOST, name), headers=headers, params=params)
+    resp = requests.post('{}://{}/{}.{}.json'.format(protocol, API_HOST, name, version), headers=headers, params=params)
     resp.encoding = 'utf-8'
     return resp.json()
 
@@ -153,7 +153,7 @@ def call_rpc(name, params):
     }
     params['req'] = name
     resp = requests.get('http://{}/xml/'.format(RPC_API_HOST), headers=headers, params=params,
-                        cookies={'sess_id': get_cache("session_id")})
+                        cookies={'session_id': get_cache("session_id")})
     resp.encoding = 'utf-8'
     return resp
 
@@ -286,7 +286,7 @@ def create_session():
     data = {
         "device_id": get_device_id(),
         "device_type": "com.crunchyroll.crunchyroid",
-        "access_token": "Scwg9PRRZ19iVwD"
+        "access_token": "WveH9VkPLrXvuNm"
     }
     expires = get_cache("expires")
     auth = get_cache("auth")
@@ -327,10 +327,11 @@ def authenticate_session(user, password, sess_id):
     data = {
         "account": user,
         "password": password,
+        "locale": 'enGB',
         "session_id": sess_id
     }
     print_overridable('Authenticating...')
-    resp = call_api('login', data, True)
+    resp = call_api('login', data, True, 2)
     if resp['error']:
         print_overridable(Color.RED + 'Error: ' + resp['message'] + Color.END, True)
     else:
@@ -600,6 +601,19 @@ def run_media(pageurl, playhead=0):
         duration = config.duration.text
         print(Color.BOLD + 'Duration:   ' + Color.END + '{}'.format(mmss(duration)))
 
+        # We scrape the episode page and obtain the first subtitle from the javascript config
+        resp = requests.get(pageurl, headers={'User-Agent': USER_AGENT}, cookies={'session_id': get_cache("session_id")}).text
+        configJson = json.loads(re.findall('vilos\.config\.media = (\{.+\});', resp)[0])
+        sub_file = None
+        if configJson['subtitles']:
+            print_overridable('Preparing subtitles...')
+            sub = configJson['subtitles'][0]
+            sub_file = tempfile.NamedTemporaryFile(mode='w+')
+            ass = requests.get(sub['url'], headers={'User-Agent': USER_AGENT}, cookies={'session_id': get_cache("session_id")})
+            ass.encoding = 'utf-8'
+            sub_file.write(ass.text)
+
+        """ We don't use subs from the config anymore
         sub = config.find('subtitle', attrs={'link': None})
         sub_file = None
         if sub:
@@ -609,6 +623,7 @@ def run_media(pageurl, playhead=0):
             _subdata = sub.data.text
             sub_file = tempfile.NamedTemporaryFile('w')
             sub_file.write(convert(decode_subtitles(_id, _iv, _subdata).decode('utf-8')))
+        """
 
         print_overridable('Fetching stream information...')
 
@@ -857,6 +872,25 @@ def download_media(pageurl):
             url = random.choice(m3u8r[::2][1:])  # eases the burden on one server, makes it look less suspect
             m3u8r = requests.get(url).text.splitlines()
         urls = []
+
+        # For premium the m3u8 is split into individual files of differing quality,
+        # we grab the one with the highest resolution.
+        resolution = 0
+        setNewUrl = False
+        newUrl = None
+        for l in m3u8r:
+            if l.startswith('#EXT-X-STREAM-INF:'):
+                size, = re.findall('RESOLUTION=([0-9]+)x([0-9]+)', l)
+                pxls = int(size[0]) * int(size[1])
+                if pxls >= resolution:
+                    resolution = pxls
+                    setNewUrl = True
+            elif setNewUrl:
+                setNewUrl = False
+                newUrl = l
+        if newUrl:
+            m3u8r = requests.get(newUrl).text.splitlines()
+
         for l in m3u8r:
             if l.startswith('#EXT-X-KEY:'):
                 key, = re.findall('URI="([^"]+)', l)
@@ -926,6 +960,27 @@ def download_media(pageurl):
         rtmpinfo.close()
         pbar.close()
 
+    # We scrape the episode page and obtain the subtitles from the javascript config
+    resp = requests.get(pageurl, headers={'User-Agent': USER_AGENT}, cookies={'session_id': get_cache("session_id")}).text
+    configJson = json.loads(re.findall('vilos\.config\.media = (\{.+\});', resp)[0])
+    first = True
+    sub_configs = []
+    if configJson['subtitles']:
+        for sub in configJson['subtitles']:
+            temp = tempfile.NamedTemporaryFile(mode='w+')
+            sub_configs.append({
+                'title': sub['title'],
+                'lang': sub['language'][:2],
+                'file': temp,
+                'default': first
+            })
+
+            ass = requests.get(sub['url'], headers={'User-Agent': USER_AGENT}, cookies={'session_id': get_cache("session_id")})
+            ass.encoding = 'utf-8'
+            temp.write(ass.text)
+            first = False
+
+    """ We don't use subs from the config anymore
     subs = config.findAll('subtitle', attrs={'link': True})
     sub_configs = []
     for sub_ele in subs:
@@ -933,7 +988,7 @@ def download_media(pageurl):
         print_overridable('Downloading and decoding "{}" subtitles...'.format(title))
         sub_response = BeautifulSoup(requests.get(sub_ele['link'], headers={
             'User-Agent': USER_AGENT
-        }, cookies={'sess_id': get_cache("session_id")}).text, 'lxml-xml')
+        }, cookies={'session_id': get_cache("session_id")}).text, 'lxml-xml')
         sub = sub_response.find('subtitle')
         if sub:
             lang_code = ''
@@ -958,6 +1013,7 @@ def download_media(pageurl):
                 'default': sub_ele['default'] == '1'
             })
             temp.write(convert(decode_subtitles(int(sub['id']), sub.iv.text, sub.data.text).decode('utf-8')))
+    """
 
     mkvfile = basepath + '.mkv'
     print_overridable('Creating ' + mkvfile + '...')
@@ -1046,20 +1102,16 @@ def run_download(search):
     result = re.search(r'^https?://(?:www\.)?crunchyroll\.com/', search)
     if result:
         # Check if it is a media URL
-        result = re.search(r'^https?://(?:www\.)?crunchyroll\.com/[^/]+/.*-[0-9]+/?(\?|#|$)', search)
+        result = re.search(r'^https?://(?:www\.)?crunchyroll\.com(/[^/]+)?/[^/]+/[^/]*-[0-9]+/?(\?|#|$)', search)
         if result:
             download_media(search)
             return
         # Check if it could be a series URL
-        result = re.search(r'^https?://(?:www\.)?crunchyroll\.com/[^/]+/?(\?|#|$)', search)
+        result = re.search(r'^https?://(?:www\.)?crunchyroll\.com(/[^/]+)?/[^/]+/?(\?|#|$)', search)
         if result:
-            headers = {
-                'Host': RPC_API_HOST,
-                'User-Agent': USER_AGENT
-            }
             print_overridable('Scraping page...')
             # Load page and look for div.show-actions[group_id] to obtain the series ID
-            resp = requests.get(search, headers=headers, cookies={'sess_id': get_cache("session_id")})
+            resp = requests.get(search, headers={'User-Agent': USER_AGENT}, cookies={'session_id': get_cache("session_id")})
             resp.encoding = 'utf-8'
             soup = BeautifulSoup(resp.text, 'html.parser')
             div = soup.find('div', class_='show-actions', attrs={'group_id': True})
