@@ -1254,10 +1254,9 @@ def main_loop(args=None):
         args = input('> ').split()
 
 
-def exit_signal_handler():
+def exit_signal_handler(signum, frame):
     print()
     exit()
-
 
 signal.signal(signal.SIGINT, exit_signal_handler)  # Remove traceback when exiting with ctrl+c
 signal.signal(signal.SIGTSTP, exit_signal_handler)  # Remove stdout stuff when exiting with ctrl+z
@@ -1273,4 +1272,5 @@ load_queue()
 try:  # Remove traceback when exiting with ctrl+d
     main_loop(argv[1:])
 except EOFError:
-    exit_signal_handler()
+    print()
+    exit()
