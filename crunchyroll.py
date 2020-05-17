@@ -159,68 +159,6 @@ def call_rpc(name, params):
     return resp
 
 
-def generate_key(mediaid):
-    # Below: Do some black magic
-    eq1 = int(int(math.floor(math.sqrt(6.9) * math.pow(2, 25))) ^ mediaid)
-    eq2 = int(math.floor(math.sqrt(6.9) * math.pow(2, 25)))
-    eq3 = str((mediaid ^ eq2) ^ (mediaid ^ eq2) >> 3 ^ eq1 * 32).encode('utf-8')
-    # Below: Creates a 160-bit SHA1 hash padded to 256-bit using zeroes
-    sha_hash = hashlib.sha1(create_string() + eq3).digest() + b'\x00' * 12
-    return sha_hash
-
-
-def create_string():
-    arg_array = [1, 2]
-    for fib in range(20):
-        arg_array.append(arg_array[-1] + arg_array[-2])
-    final_string = ''
-    for arg in arg_array[2:]:
-        final_string += chr(arg % 97 + 33)
-    return final_string.encode('utf-8')
-
-
-def decode_subtitles(subid, iv, data):
-    key = generate_key(subid)
-    iv = base64.b64decode(iv)
-    data = base64.b64decode(data)
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    decrypteddata = cipher.decrypt(data)
-    return zlib.decompress(decrypteddata)
-
-
-def convert(script):
-    soup = BeautifulSoup(script, 'xml')
-    header = soup.find('subtitle_script')
-    header = "[Script Info]\nTitle: " + header['title'] + "\nScriptType: v4.00+\nWrapStyle: " + header['wrap_style'] \
-             + "\nPlayResX: " + header['play_res_x'] + "\nPlayResY: " + header['play_res_y'] + "\n\n"
-    styles = "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, " \
-             "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, " \
-             "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-    events = "\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-    stylelist = soup.findAll('style')
-    eventlist = soup.findAll('event')
-
-    for style in stylelist:
-        if style['scale_x'] or style['scale_y'] == '0':
-            style['scale_x'], style['scale_y'] = '100', '100'  # Fix for Naruto 1-8 where it's set to 0 but ignored
-        styles += "Style: " + style['name'] + "," + style['font_name'] + "," + style['font_size'] + "," \
-                  + style['primary_colour'] + "," + style['secondary_colour'] + "," + style['outline_colour'] + "," \
-                  + style['back_colour'] + "," + style['bold'] + "," + style['italic'] + "," \
-                  + style['underline'] + "," + style['strikeout'] + "," + style['scale_x'] + "," \
-                  + style['scale_y'] + "," + style['spacing'] + "," + style['angle'] + "," \
-                  + style['border_style'] + "," + style['outline'] + "," + style['shadow'] + "," \
-                  + style['alignment'] + "," + style['margin_l'] + "," + style['margin_r'] + "," \
-                  + style['margin_v'] + "," + style['encoding'] + "\n"
-
-    for event in eventlist:
-        events += "Dialogue: 0," + event['start'] + "," + event['end'] + "," + event['style'] + "," \
-                  + event['name'] + "," + event['margin_l'] + "," + event['margin_r'] + "," + event['margin_v'] \
-                  + "," + event['effect'] + "," + event['text'] + "\n"
-
-    formattedsubs = header + styles + events
-    return formattedsubs
-
-
 def get_cache(key=None):
     def _get_cache():
         global ram_cache
@@ -614,18 +552,6 @@ def run_media(pageurl, playhead=0):
             ass.encoding = 'utf-8'
             sub_file.write(ass.text)
 
-        """ We don't use subs from the config anymore
-        sub = config.find('subtitle', attrs={'link': None})
-        sub_file = None
-        if sub:
-            print_overridable('Preparing subtitles...')
-            _id = int(sub['id'])
-            _iv = sub.iv.text
-            _subdata = sub.data.text
-            sub_file = tempfile.NamedTemporaryFile('w')
-            sub_file.write(convert(decode_subtitles(_id, _iv, _subdata).decode('utf-8')))
-        """
-
         print_overridable('Fetching stream information...')
 
         streamconfig = BeautifulSoup(call_rpc('RpcApiVideoEncode_GetStreamInfo', data).text, 'lxml-xml')
@@ -886,10 +812,10 @@ def download_media(pageurl):
         newUrl = None
         for l in m3u8r:
             if l.startswith('#EXT-X-STREAM-INF:'):
-                size, = re.findall('RESOLUTION=([0-9]+)x([0-9]+)', l)
-                pxls = int(size[0]) * int(size[1])
-                if pxls >= resolution:
-                    resolution = pxls
+                size, = re.findall('RESOLUTION=[0-9]+x([0-9]+)', l)
+                height = int(size[1])
+                if height >= resolution:
+                    resolution = height
                     setNewUrl = True
             elif setNewUrl:
                 setNewUrl = False
@@ -967,11 +893,14 @@ def download_media(pageurl):
         pbar.close()
 
     # We scrape the episode page and obtain the subtitles from the javascript config
+    print_overridable('Fetching subtitles...')
     resp = requests.get(pageurl, headers={'User-Agent': USER_AGENT}, cookies={'session_id': get_cache("session_id")}).text
     configJson = json.loads(re.findall('vilos\.config\.media = (\{.+\});', resp)[0])
     first = True
     sub_configs = []
     if configJson['subtitles']:
+        print_overridable('Downloading subtitles...')
+        pbar = tqdm(total=len(configJson['subtitles']), unit="sub")
         for sub in configJson['subtitles']:
             temp = tempfile.NamedTemporaryFile(mode='w+')
             sub_configs.append({
@@ -984,42 +913,9 @@ def download_media(pageurl):
             ass = requests.get(sub['url'], headers={'User-Agent': USER_AGENT}, cookies={'session_id': get_cache("session_id")})
             ass.encoding = 'utf-8'
             temp.write(ass.text)
+            pbar.update()
             first = False
-
-    """ We don't use subs from the config anymore
-    subs = config.findAll('subtitle', attrs={'link': True})
-    sub_configs = []
-    for sub_ele in subs:
-        title = sub_ele['title']
-        print_overridable('Downloading and decoding "{}" subtitles...'.format(title))
-        sub_response = BeautifulSoup(requests.get(sub_ele['link'], headers={
-            'User-Agent': USER_AGENT
-        }, cookies={'session_id': get_cache("session_id")}).text, 'lxml-xml')
-        sub = sub_response.find('subtitle')
-        if sub:
-            lang_code = ''
-            # TODO: Add support for remaining languages on crunchyroll
-            if "English" in title:
-                lang_code = 'eng'
-            elif "Español" in title:
-                lang_code = 'spa'
-            elif "Português" in title:
-                lang_code = 'por'
-            elif "Deutsch" in title:
-                lang_code = 'deu'
-            elif "Français" in title:
-                lang_code = 'fre'
-            elif "Italiano" in title:
-                lang_code = 'ita'
-            temp = tempfile.NamedTemporaryFile(mode='w+')
-            sub_configs.append({
-                'title': title,
-                'lang': lang_code,
-                'file': temp,
-                'default': sub_ele['default'] == '1'
-            })
-            temp.write(convert(decode_subtitles(int(sub['id']), sub.iv.text, sub.data.text).decode('utf-8')))
-    """
+        pbar.close()
 
     mkvfile = basepath + '.mkv'
     print_overridable('Creating ' + mkvfile + '...')
