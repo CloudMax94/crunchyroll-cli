@@ -1025,7 +1025,7 @@ def run_download(search):
         print(Color.RED + 'Error: The specified URL was not for a series or media page' + Color.END)
         return
 
-    if search is "":
+    if search == "":
         print(Color.RED + 'Error: Empty search query' + Color.END)
         return
 
@@ -1073,7 +1073,7 @@ def show_queue(args=None):
 
     def following_title(airtime):
         nonlocal crnt_day
-        if mode is "following":
+        if mode == "following":
             week_day = airtime.weekday()
             if week_day > crnt_day:
                 crnt_day = week_day
@@ -1105,7 +1105,7 @@ def show_queue(args=None):
             continue  # Modes filter out series that you have not watched
         air = media['available_time']
         if not media['duration'] or air >= now:
-            if mode is "watching":
+            if mode == "watching":
                 continue  # The watching mode does not include unreleased episodes
             following_title(air)
             print(Color.YELLOW + format_media_display(media) + Color.END)
@@ -1115,7 +1115,7 @@ def show_queue(args=None):
             if hide_seen and seen:
                 continue  # Hide seen episodes if the unseen filter is set
             days = math.ceil((now - air).total_seconds()) / 60 / 60 / 24
-            if mode is "following" and days >= QUEUE_FOLLOWING_THRESHOLD:
+            if mode == "following" and days >= QUEUE_FOLLOWING_THRESHOLD:
                 continue  # Hide episodes that are past the following threshold in following mode
             following_title(air)
             if seen:
